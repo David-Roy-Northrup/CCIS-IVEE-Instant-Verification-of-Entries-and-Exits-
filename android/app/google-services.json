@@ -1,0 +1,90 @@
+{
+  "project_info": {
+    "project_number": "843533343549",
+    "project_id": "ivee-a3512",
+    "storage_bucket": "ivee-a3512.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:843533343549:android:a69359de83a33c4c38c354",
+        "android_client_info": {
+          "package_name": "cjc.edu.ph.ivee"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "843533343549-innj4g3s6puce4qshgeesp7coov6dc5a.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "cjc.edu.ph.ivee",
+            "certificate_hash": "6aa816d999a50ed25592a22fe5245c726fd4bf07"
+          }
+        },
+        {
+          "client_id": "843533343549-uenmr11q78sl488338448qcq6rtdn29k.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBckBp4RW0kWY6WMHJZ-ML0hCT18jTxLuk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "843533343549-uenmr11q78sl488338448qcq6rtdn29k.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "843533343549-ltkboiqtu7nptkrs5df1csgjsj267qn3.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.ivee"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:843533343549:android:e056d831e6e05a5b38c354",
+        "android_client_info": {
+          "package_name": "com.example.ivee"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "843533343549-uenmr11q78sl488338448qcq6rtdn29k.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBckBp4RW0kWY6WMHJZ-ML0hCT18jTxLuk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "843533343549-uenmr11q78sl488338448qcq6rtdn29k.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "843533343549-ltkboiqtu7nptkrs5df1csgjsj267qn3.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.ivee"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
