@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_email_sender/flutter_email_sender.dart';
 import 'package:intl/intl.dart';
 
+import '../../../widgets/action_feedback.dart';
+
 class StatisticsTab extends StatefulWidget {
   const StatisticsTab({super.key});
 
@@ -44,10 +46,19 @@ class _StatisticsTabState extends State<StatisticsTab> {
     _preloadStatistics();
   }
 
-  void _snack(String msg, {Color? color}) {
+  Future<void> _feedback({
+    required bool success,
+    required String title,
+    required String message,
+    List<String> affected = const [],
+  }) async {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: color ?? Colors.black87),
+    await ActionFeedbackOverlay.show(
+      context,
+      success: success,
+      title: title,
+      message: message,
+      affected: affected,
     );
   }
 
@@ -139,7 +150,12 @@ class _StatisticsTabState extends State<StatisticsTab> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _loadingStats = false);
-      _snack('Error loading statistics: $e', color: Colors.red);
+      await _feedback(
+        success: false,
+        title: 'Load failed',
+        message: 'Error loading statistics.',
+        affected: ['Error: $e'],
+      );
     }
   }
 
@@ -222,8 +238,9 @@ class _StatisticsTabState extends State<StatisticsTab> {
     return confirm == true;
   }
 
-  Future<void> _deleteAllInCollection(String collectionName) async {
+  Future<int> _deleteAllInCollection(String collectionName) async {
     final col = FirebaseFirestore.instance.collection(collectionName);
+    int deleted = 0;
 
     while (true) {
       final snap = await col.limit(450).get();
@@ -232,9 +249,12 @@ class _StatisticsTabState extends State<StatisticsTab> {
       final batch = FirebaseFirestore.instance.batch();
       for (final d in snap.docs) {
         batch.delete(d.reference);
+        deleted++;
       }
       await batch.commit();
     }
+
+    return deleted;
   }
 
   Future<void> _clearAttendanceRecords() async {
@@ -247,17 +267,31 @@ class _StatisticsTabState extends State<StatisticsTab> {
     if (!confirm) return;
 
     try {
-      await _deleteAllInCollection('attendanceLog');
+      final deleted = await _deleteAllInCollection('attendanceLog');
       await _logDelete(
         type: 'Attendance',
         remarks: 'Cleared ALL attendance records (backup recommended).',
         studentId: 'ALL',
       );
-      _snack('All attendance records cleared.', color: Colors.green);
+
+      await _feedback(
+        success: true,
+        title: 'Attendance cleared',
+        message: 'All attendance records were removed.',
+        affected: [
+          'attendanceLog: $deleted record(s) removed',
+          'deleteLog: +1 record',
+        ],
+      );
 
       await _preloadStatistics();
     } catch (e) {
-      _snack('Error clearing attendance records: $e', color: Colors.red);
+      await _feedback(
+        success: false,
+        title: 'Clear failed',
+        message: 'Error clearing attendance records.',
+        affected: ['Error: $e'],
+      );
     }
   }
 
@@ -271,17 +305,31 @@ class _StatisticsTabState extends State<StatisticsTab> {
     if (!confirm) return;
 
     try {
-      await _deleteAllInCollection('students');
+      final deleted = await _deleteAllInCollection('students');
       await _logDelete(
         type: 'Students',
         remarks: 'Cleared ALL student records (backup recommended).',
         studentId: 'ALL',
       );
-      _snack('All student records cleared.', color: Colors.green);
+
+      await _feedback(
+        success: true,
+        title: 'Students cleared',
+        message: 'All student records were removed.',
+        affected: [
+          'students: $deleted record(s) removed',
+          'deleteLog: +1 record',
+        ],
+      );
 
       await _preloadStatistics();
     } catch (e) {
-      _snack('Error clearing student records: $e', color: Colors.red);
+      await _feedback(
+        success: false,
+        title: 'Clear failed',
+        message: 'Error clearing student records.',
+        affected: ['Error: $e'],
+      );
     }
   }
 
@@ -290,7 +338,12 @@ class _StatisticsTabState extends State<StatisticsTab> {
     try {
       // Ensure preloaded data exists
       if (_loadingStats) {
-        _snack('Loading statistics... please wait.');
+        await _feedback(
+          success: false,
+          title: 'Please wait',
+          message: 'Statistics are still loading.',
+          affected: const ['Action: Email Attendance Log'],
+        );
         return;
       }
 
@@ -343,18 +396,37 @@ class _StatisticsTabState extends State<StatisticsTab> {
           body: body,
           attachmentPath: file.path,
         );
-        _snack('Email app opened with CSV attached.', color: Colors.green);
+
+        await _feedback(
+          success: true,
+          title: 'Email ready',
+          message: 'Email app opened with the CSV attached.',
+          affected: [
+            'Attachment: ${file.path}',
+            'Students: $_totalStudents',
+            'Events: ${events.length}',
+          ],
+        );
       } on PlatformException catch (e) {
         // Common: "No email clients found!"
-        _snack(
-          'CSV was generated, but no email app was found.\n'
-          'Please install/configure an email client (e.g., Gmail/Outlook) and try again.\n\n'
-          'Details: ${e.message ?? e.code}',
-          color: Colors.red,
+        await _feedback(
+          success: false,
+          title: 'No email app found',
+          message:
+              'CSV was generated, but no email app was found. Install/configure an email client and try again.',
+          affected: [
+            'Attachment: ${file.path}',
+            'Details: ${e.message ?? e.code}',
+          ],
         );
       }
     } catch (e) {
-      _snack('Error generating/sending CSV: $e', color: Colors.red);
+      await _feedback(
+        success: false,
+        title: 'Export failed',
+        message: 'Error generating/sending CSV.',
+        affected: ['Error: $e'],
+      );
     }
   }
 

@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../../../widgets/action_feedback.dart';
+
 class AddUserAccessScreen extends StatefulWidget {
   const AddUserAccessScreen({super.key});
 
@@ -10,58 +12,124 @@ class AddUserAccessScreen extends StatefulWidget {
 
 class _AddUserAccessScreenState extends State<AddUserAccessScreen> {
   final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _nameController = TextEditingController();
 
-  bool _isAdmin = false;
-  bool _isOperator = false;
+  bool _administrator = false;
+  bool _operator = false;
+
   bool _saving = false;
 
-  void _snack(String msg, {Color? color}) {
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  String _normalizeEmail(String email) => email.trim().toLowerCase();
+
+  bool _isValidEmail(String email) {
+    final e = _normalizeEmail(email);
+    // Basic check; keep simple and strict.
+    return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(e);
+  }
+
+  Future<void> _feedback(
+    bool ok,
+    String title,
+    String msg, {
+    List<String> affected = const [],
+  }) async {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: color ?? Colors.black87),
+    await ActionFeedbackOverlay.show(
+      context,
+      success: ok,
+      title: title,
+      message: msg,
+      affected: affected,
     );
   }
 
-  bool _emailOk(String email) {
-    final e = email.trim().toLowerCase();
-    return e.endsWith('@g.cjc.edu.ph') && e.length > '@g.cjc.edu.ph'.length;
-  }
-
   Future<void> _save() async {
-    final email = _emailController.text.trim().toLowerCase();
+    final email = _normalizeEmail(_emailController.text);
+    final name = _nameController.text.trim();
 
-    if (!_emailOk(email)) {
-      _snack('Email must end with @g.cjc.edu.ph', color: Colors.red);
+    if (email.isEmpty) {
+      await _feedback(
+        false,
+        'Missing email',
+        'Email is required.',
+        affected: const ['Field: Email'],
+      );
+      return;
+    }
+    if (!_isValidEmail(email)) {
+      await _feedback(
+        false,
+        'Invalid email',
+        'Please enter a valid email address.',
+        affected: ['Email: $email'],
+      );
+      return;
+    }
+
+    // If you want to enforce only @g.cjc.edu.ph accounts:
+    if (!email.endsWith('@g.cjc.edu.ph')) {
+      await _feedback(
+        false,
+        'Invalid domain',
+        'Only CJC GSuite accounts are allowed.',
+        affected: ['Email must end with @g.cjc.edu.ph', 'Email: $email'],
+      );
       return;
     }
 
     setState(() => _saving = true);
 
     try {
-      // Only store email + access.
-      // Name/photoUrl should be written by that user when they SIGN IN (AuthScreen merge update).
-      await FirebaseFirestore.instance.collection('users').doc(email).set({
-        'email': email,
-        'administrator': _isAdmin,
-        'operator': _isOperator,
-      }, SetOptions(merge: true));
+      final ref = FirebaseFirestore.instance.collection('users').doc(email);
+      final existing = await ref.get();
+      if (existing.exists) {
+        await _feedback(
+          false,
+          'User already exists',
+          'This email already has an access record.',
+          affected: ['User: $email', 'users/$email already exists'],
+        );
+        return;
+      }
 
-      if (mounted) Navigator.pop(context);
-      _snack('User added.', color: Colors.green);
+      await ref.set({
+        'email': email,
+        'name': name,
+        'administrator': _administrator,
+        'operator': _operator,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) return;
+
+      Navigator.pop(context, {
+        'added': true,
+        'email': email,
+        'name': name,
+        'administrator': _administrator,
+        'operator': _operator,
+      });
     } catch (e) {
-      _snack('Error: $e', color: Colors.red);
+      await _feedback(
+        false,
+        'Add failed',
+        'Unable to create user access record.',
+        affected: ['User: $email', 'Error: $e'],
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
-  @override
-  void dispose() {
-    _emailController.dispose();
-    super.dispose();
-  }
-
-  Widget _whiteCard({required Widget child}) {
+  Widget _card({required Widget child}) {
     return Container(
       margin: const EdgeInsets.all(16),
       padding: const EdgeInsets.all(16),
@@ -81,59 +149,70 @@ class _AddUserAccessScreenState extends State<AddUserAccessScreen> {
       backgroundColor: navy,
       appBar: AppBar(
         backgroundColor: navy,
-        title: const Text('Add User', style: TextStyle(color: Colors.white)),
         iconTheme: const IconThemeData(color: Colors.white),
+        title: const Text(
+          'Add User Access',
+          style: TextStyle(color: Colors.white),
+        ),
       ),
       body: SafeArea(
-        child: _whiteCard(
+        child: _card(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                'User Email',
+                'Email',
                 style: TextStyle(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
               TextField(
                 controller: _emailController,
+                enabled: !_saving,
                 keyboardType: TextInputType.emailAddress,
-                onChanged: (_) => setState(() {}),
                 decoration: InputDecoration(
-                  hintText: 'example@g.cjc.edu.ph',
+                  hintText: 'user@g.cjc.edu.ph',
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(14),
                   ),
-                  suffixIcon: Icon(
-                    _emailOk(_emailController.text)
-                        ? Icons.check_circle
-                        : Icons.info,
-                    color: _emailOk(_emailController.text)
-                        ? Colors.green
-                        : Colors.grey,
-                  ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 14),
               const Text(
-                'Access',
+                'Name (optional)',
                 style: TextStyle(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Administrator'),
-                value: _isAdmin,
-                onChanged: _saving
-                    ? null
-                    : (v) => setState(() => _isAdmin = v ?? false),
+              TextField(
+                controller: _nameController,
+                enabled: !_saving,
+                decoration: InputDecoration(
+                  hintText: 'Full name',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
               ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Operator'),
-                value: _isOperator,
+              const SizedBox(height: 14),
+              const Text(
+                'Roles',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                title: const Text('Administrator'),
+                subtitle: const Text('Access to admin dashboard features'),
+                value: _administrator,
                 onChanged: _saving
                     ? null
-                    : (v) => setState(() => _isOperator = v ?? false),
+                    : (v) => setState(() => _administrator = v),
+              ),
+              SwitchListTile(
+                title: const Text('Operator'),
+                subtitle: const Text('Access to scanning/operator features'),
+                value: _operator,
+                onChanged: _saving
+                    ? null
+                    : (v) => setState(() => _operator = v),
               ),
               const Spacer(),
               ElevatedButton(

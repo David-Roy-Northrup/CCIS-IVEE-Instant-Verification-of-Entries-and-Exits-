@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../../../widgets/action_feedback.dart';
+
 class AddEventScreen extends StatefulWidget {
   const AddEventScreen({super.key});
 
@@ -14,17 +16,35 @@ class _AddEventScreenState extends State<AddEventScreen> {
   String _label = 'Login';
   bool _saving = false;
 
-  void _snack(String msg, {Color? color}) {
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _feedbackError(
+    String title,
+    String message, {
+    List<String> affected = const [],
+  }) async {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: color ?? Colors.black87),
+    await ActionFeedbackOverlay.show(
+      context,
+      success: false,
+      title: title,
+      message: message,
+      affected: affected,
     );
   }
 
   Future<void> _save() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
-      _snack('Event name is required.', color: Colors.red);
+      await _feedbackError(
+        'Missing event name',
+        'Event name is required.',
+        affected: const ['Field: Event Name'],
+      );
       return;
     }
 
@@ -38,10 +58,21 @@ class _AddEventScreenState extends State<AddEventScreen> {
         'isEnabled': true,
       });
 
-      if (mounted) Navigator.pop(context);
-      _snack('Event added.', color: Colors.green);
+      if (!mounted) return;
+
+      // Return a result so the parent (EventsTab) can show the success feedback
+      Navigator.pop(context, {
+        'added': true,
+        'eventName': name,
+        'label': _label,
+        'isEnabled': true,
+      });
     } catch (e) {
-      _snack('Error adding event: $e', color: Colors.red);
+      await _feedbackError(
+        'Add failed',
+        'Unable to add event.',
+        affected: ['Error: $e'],
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -57,12 +88,6 @@ class _AddEventScreenState extends State<AddEventScreen> {
       ),
       child: child,
     );
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    super.dispose();
   }
 
   @override
@@ -88,6 +113,7 @@ class _AddEventScreenState extends State<AddEventScreen> {
               const SizedBox(height: 8),
               TextField(
                 controller: _nameController,
+                enabled: !_saving,
                 decoration: InputDecoration(
                   hintText: 'e.g. CCS Orientation',
                   border: OutlineInputBorder(

@@ -686,11 +686,11 @@ class _OperatorScannerState extends State<OperatorScanner>
         final label = (data['label'] ?? '').toString();
         final display = label.isNotEmpty ? '$name - $label' : name;
         return DropdownMenuItem<String?>(value: doc.id, child: Text(display));
-      }).toList(),
+      }),
     ];
 
     return DropdownButtonFormField<String?>(
-      value: _selectedEventId,
+      initialValue: _selectedEventId,
       items: items,
       onChanged: _isProcessing
           ? null

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 
+import '../../../widgets/action_feedback.dart';
 import 'add_user_access_screen.dart';
 import 'edit_user_access_screen.dart';
 
@@ -14,10 +14,12 @@ class UserAccessTab extends StatefulWidget {
 
 class _UserAccessTabState extends State<UserAccessTab> {
   final TextEditingController _searchController = TextEditingController();
-  String _searchQuery = "";
 
-  String get _currentUserEmail =>
-      FirebaseAuth.instance.currentUser?.email?.toLowerCase() ?? "";
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() => setState(() {}));
+  }
 
   @override
   void dispose() {
@@ -25,19 +27,12 @@ class _UserAccessTabState extends State<UserAccessTab> {
     super.dispose();
   }
 
-  void _snack(String msg, {Color? color}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: color ?? Colors.black87),
-    );
-  }
-
   String _deriveNameFromEmail(String email) {
     final e = email.trim().toLowerCase();
-    if (!e.contains('@')) return 'Unknown';
+    if (!e.contains('@')) return email;
     final local = e.split('@').first;
     final cleaned = local.replaceAll(RegExp(r'[\._\-]+'), ' ').trim();
-    if (cleaned.isEmpty) return 'Unknown';
+    if (cleaned.isEmpty) return email;
     return cleaned
         .split(' ')
         .where((p) => p.trim().isNotEmpty)
@@ -45,291 +40,342 @@ class _UserAccessTabState extends State<UserAccessTab> {
         .join(' ');
   }
 
-  Future<void> _deleteUser(
-    BuildContext context,
-    String docId,
-    String email,
-  ) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Text("Delete User"),
-        content: Text("Are you sure you want to delete:\n\n$email"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("Cancel"),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
+  Future<void> _feedbackSuccess(
+    String title,
+    String message, {
+    List<String> affected = const [],
+  }) async {
+    if (!mounted) return;
+    await ActionFeedbackOverlay.show(
+      context,
+      success: true,
+      title: title,
+      message: message,
+      affected: affected,
+    );
+  }
+
+  Future<void> _feedbackError(
+    String title,
+    String message, {
+    List<String> affected = const [],
+  }) async {
+    if (!mounted) return;
+    await ActionFeedbackOverlay.show(
+      context,
+      success: false,
+      title: title,
+      message: message,
+      affected: affected,
+    );
+  }
+
+  Widget _whitePane({required Widget child}) {
+    return Container(
+      margin: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _roleChip(String text, {Color? bg, Color? fg, IconData? icon}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg ?? Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.black12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 14, color: fg ?? Colors.black87),
+            const SizedBox(width: 6),
+          ],
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: fg ?? Colors.black87,
             ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text("Delete"),
           ),
         ],
       ),
     );
+  }
 
-    if (confirm != true) return;
-
-    try {
-      await FirebaseFirestore.instance.collection('users').doc(docId).delete();
-      _snack("User deleted.");
-    } catch (e) {
-      _snack("Error deleting user: $e", color: Colors.red);
-    }
+  bool _matchesSearch(String q, String name, String email) {
+    if (q.isEmpty) return true;
+    final haystack = '${name.toLowerCase()} ${email.toLowerCase()}';
+    return haystack.contains(q);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0A0F3C),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: const [
-              BoxShadow(
-                color: Colors.black12,
-                blurRadius: 8,
-                offset: Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Column(
+    final q = _searchController.text.trim().toLowerCase();
+
+    return _whitePane(
+      child: Column(
+        children: [
+          Row(
             children: [
-              const SizedBox(height: 12),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 12),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    "IVEE Users",
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    hintText: 'Search users (name/email)',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                    suffixIcon: _searchController.text.trim().isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Clear',
+                            onPressed: () => _searchController.clear(),
+                            icon: const Icon(Icons.close),
+                          ),
                   ),
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(width: 8),
 
-              // Search + Add button row
-              Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _searchController,
-                        decoration: InputDecoration(
-                          prefixIcon: const Icon(Icons.search),
-                          hintText: "Search User",
-                          filled: true,
-                          fillColor: Colors.grey[100],
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide.none,
-                          ),
-                        ),
-                        onChanged: (value) {
-                          setState(() {
-                            _searchQuery = value.toLowerCase().trim();
-                          });
-                        },
-                      ),
+              // ✅ Add button matches Events tab style
+              IconButton(
+                tooltip: 'Add User',
+                iconSize: 26,
+                icon: const Icon(Icons.add_circle, color: Colors.green),
+                onPressed: () async {
+                  final result = await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const AddUserAccessScreen(),
                     ),
-                    const SizedBox(width: 10),
-                    SizedBox(
-                      height: 46,
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF0A0F3C),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        onPressed: () async {
-                          await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const AddUserAccessScreen(),
-                            ),
-                          );
-                        },
-                        icon: const Icon(Icons.add),
-                        label: const Text("Add"),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+                  );
 
-              // User list
-              Expanded(
-                child: StreamBuilder<QuerySnapshot>(
-                  stream: FirebaseFirestore.instance
-                      .collection('users')
-                      .snapshots(),
-                  builder: (context, snapshot) {
-                    if (snapshot.hasError) {
-                      return const Center(
-                        child: Text(
-                          "Error loading users",
-                          style: TextStyle(color: Colors.red),
-                        ),
-                      );
-                    }
+                  if (result is Map && result['added'] == true) {
+                    final email = (result['email'] ?? '').toString();
+                    final name = (result['name'] ?? '').toString();
+                    final admin = result['administrator'] == true;
+                    final op = result['operator'] == true;
 
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-
-                    final docs = snapshot.data?.docs ?? [];
-
-                    final filtered = docs.where((doc) {
-                      final data = doc.data() as Map<String, dynamic>;
-                      final email = (data['email'] ?? doc.id)
-                          .toString()
-                          .toLowerCase();
-                      final name = (data['name'] ?? '')
-                          .toString()
-                          .toLowerCase();
-                      if (_searchQuery.isEmpty) return true;
-                      return email.contains(_searchQuery) ||
-                          name.contains(_searchQuery);
-                    }).toList();
-
-                    filtered.sort((a, b) {
-                      final ae =
-                          ((a.data() as Map<String, dynamic>)['email'] ?? a.id)
-                              .toString()
-                              .toLowerCase();
-                      final be =
-                          ((b.data() as Map<String, dynamic>)['email'] ?? b.id)
-                              .toString()
-                              .toLowerCase();
-                      return ae.compareTo(be);
-                    });
-
-                    if (filtered.isEmpty) {
-                      return const Center(
-                        child: Text(
-                          "No users found",
-                          style: TextStyle(color: Colors.black54),
-                        ),
-                      );
-                    }
-
-                    return ListView.separated(
-                      itemCount: filtered.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (context, index) {
-                        final doc = filtered[index];
-                        final data = doc.data() as Map<String, dynamic>;
-
-                        final email = (data['email'] ?? doc.id).toString();
-                        final storedName = (data['name'] ?? '').toString();
-                        final photoUrl = (data['photoUrl'] ?? '').toString();
-
-                        final displayName = storedName.isNotEmpty
-                            ? storedName
-                            : _deriveNameFromEmail(email);
-
-                        final isAdmin =
-                            (data['administrator'] ?? false) == true;
-                        final isOperator = (data['operator'] ?? false) == true;
-
-                        final roles = <String>[
-                          if (isAdmin) "Administrator",
-                          if (isOperator) "Operator",
-                        ];
-
-                        final isSelf = email.toLowerCase() == _currentUserEmail;
-
-                        return ListTile(
-                          leading: CircleAvatar(
-                            radius: 22,
-                            backgroundColor: Colors.grey[200],
-                            backgroundImage: photoUrl.isNotEmpty
-                                ? NetworkImage(photoUrl)
-                                : null,
-                            child: photoUrl.isEmpty
-                                ? Text(
-                                    displayName.isNotEmpty
-                                        ? displayName[0].toUpperCase()
-                                        : "?",
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w900,
-                                      color: Colors.black54,
-                                    ),
-                                  )
-                                : null,
-                          ),
-                          title: Text(
-                            displayName,
-                            style: const TextStyle(fontWeight: FontWeight.w800),
-                          ),
-                          subtitle: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(email, style: const TextStyle(fontSize: 12)),
-                              const SizedBox(height: 2),
-                              Text(
-                                roles.isEmpty ? "No Access" : roles.join(", "),
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.black87,
-                                ),
-                              ),
-                            ],
-                          ),
-                          isThreeLine: true,
-                          trailing: isSelf
-                              ? null
-                              : Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.edit,
-                                        color: Colors.blue,
-                                      ),
-                                      onPressed: () async {
-                                        await Navigator.push(
-                                          context,
-                                          MaterialPageRoute(
-                                            builder: (_) =>
-                                                EditUserAccessScreen(
-                                                  docId: doc.id,
-                                                  data: data,
-                                                ),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.delete,
-                                        color: Colors.red,
-                                      ),
-                                      onPressed: () =>
-                                          _deleteUser(context, doc.id, email),
-                                    ),
-                                  ],
-                                ),
-                        );
-                      },
+                    await _feedbackSuccess(
+                      'User added',
+                      'Access record created successfully.',
+                      affected: [
+                        if (email.isNotEmpty) 'User: $email',
+                        if (name.isNotEmpty) 'Name: $name',
+                        'Roles: ${[if (admin) 'Administrator', if (op) 'Operator', if (!admin && !op) 'None'].join(', ')}',
+                        'users: +1 record',
+                      ],
                     );
-                  },
-                ),
+                  }
+                },
               ),
             ],
           ),
-        ),
+          const SizedBox(height: 12),
+
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('users')
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(child: Text('Error: ${snapshot.error}'));
+                }
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final docs = snapshot.data!.docs.toList();
+
+                // sort by name/email
+                docs.sort((a, b) {
+                  final am = (a.data() as Map<String, dynamic>);
+                  final bm = (b.data() as Map<String, dynamic>);
+                  final aEmail = (am['email'] ?? a.id).toString().toLowerCase();
+                  final bEmail = (bm['email'] ?? b.id).toString().toLowerCase();
+                  final aName = (am['name'] ?? '')
+                      .toString()
+                      .trim()
+                      .toLowerCase();
+                  final bName = (bm['name'] ?? '')
+                      .toString()
+                      .trim()
+                      .toLowerCase();
+                  final ax = aName.isEmpty ? aEmail : aName;
+                  final bx = bName.isEmpty ? bEmail : bName;
+                  return ax.compareTo(bx);
+                });
+
+                final filtered = docs.where((d) {
+                  final m = (d.data() as Map<String, dynamic>);
+                  final email = (m['email'] ?? d.id).toString();
+                  final nameRaw = (m['name'] ?? '').toString().trim();
+                  final name = nameRaw.isEmpty
+                      ? _deriveNameFromEmail(email)
+                      : nameRaw;
+                  return _matchesSearch(q, name, email);
+                }).toList();
+
+                if (filtered.isEmpty) {
+                  return Center(
+                    child: Text(
+                      q.isEmpty ? 'No users found.' : 'No results for "$q".',
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  itemCount: filtered.length,
+                  itemBuilder: (context, i) {
+                    final doc = filtered[i];
+                    final data = (doc.data() as Map<String, dynamic>);
+                    final email = (data['email'] ?? doc.id).toString();
+                    final nameRaw = (data['name'] ?? '').toString().trim();
+                    final name = nameRaw.isEmpty
+                        ? _deriveNameFromEmail(email)
+                        : nameRaw;
+
+                    final isAdmin = data['administrator'] == true;
+                    final isOperator = data['operator'] == true;
+
+                    final roles = <Widget>[
+                      if (isAdmin)
+                        _roleChip(
+                          'Administrator',
+                          bg: Colors.blue.shade50,
+                          fg: Colors.blue.shade800,
+                          icon: Icons.admin_panel_settings,
+                        ),
+                      if (isOperator)
+                        _roleChip(
+                          'Operator',
+                          bg: Colors.green.shade50,
+                          fg: Colors.green.shade800,
+                          icon: Icons.qr_code_scanner,
+                        ),
+                      if (!isAdmin && !isOperator)
+                        _roleChip(
+                          'No roles',
+                          bg: Colors.red.shade50,
+                          fg: Colors.red.shade700,
+                          icon: Icons.block,
+                        ),
+                    ];
+
+                    return Card(
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      margin: const EdgeInsets.symmetric(vertical: 5),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.person_outline, size: 22),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name,
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    email,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.black54,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 8,
+                                    children: roles,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Edit',
+                              icon: const Icon(
+                                Icons.edit,
+                                color: Colors.black54,
+                              ),
+                              onPressed: () async {
+                                final result = await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => EditUserAccessScreen(
+                                      email: email,
+                                      initialData: data,
+                                    ),
+                                  ),
+                                );
+
+                                if (result is Map) {
+                                  if (result['updated'] == true) {
+                                    final admin =
+                                        result['administrator'] == true;
+                                    final op = result['operator'] == true;
+                                    await _feedbackSuccess(
+                                      'User updated',
+                                      'Access roles were updated successfully.',
+                                      affected: [
+                                        'User: $email',
+                                        'Roles: ${[if (admin) 'Administrator', if (op) 'Operator', if (!admin && !op) 'None'].join(', ')}',
+                                        'users/$email updated',
+                                      ],
+                                    );
+                                  } else if (result['deleted'] == true) {
+                                    await _feedbackSuccess(
+                                      'User removed',
+                                      'Access record was deleted successfully.',
+                                      affected: [
+                                        'User: $email',
+                                        'users/$email deleted',
+                                      ],
+                                    );
+                                  } else if (result['error'] != null) {
+                                    await _feedbackError(
+                                      'Action failed',
+                                      'Unable to complete request.',
+                                      affected: [
+                                        'User: $email',
+                                        'Error: ${result['error']}',
+                                      ],
+                                    );
+                                  }
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

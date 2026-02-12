@@ -1,14 +1,16 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../../../widgets/action_feedback.dart';
+
 class EditUserAccessScreen extends StatefulWidget {
-  final String docId;
-  final Map<String, dynamic> data;
+  final String email;
+  final Map<String, dynamic> initialData;
 
   const EditUserAccessScreen({
     super.key,
-    required this.docId,
-    required this.data,
+    required this.email,
+    required this.initialData,
   });
 
   @override
@@ -16,62 +18,154 @@ class EditUserAccessScreen extends StatefulWidget {
 }
 
 class _EditUserAccessScreenState extends State<EditUserAccessScreen> {
-  late bool _isAdmin;
-  late bool _isOperator;
+  late final TextEditingController _nameController;
+
+  bool _administrator = false;
+  bool _operator = false;
+
   bool _saving = false;
-
-  String get _email => (widget.data['email'] ?? widget.docId).toString();
-  String get _name => (widget.data['name'] ?? '').toString();
-  String get _photoUrl => (widget.data['photoUrl'] ?? '').toString();
-
-  String _deriveNameFromEmail(String email) {
-    final e = email.trim().toLowerCase();
-    if (!e.contains('@')) return 'Unknown';
-    final local = e.split('@').first;
-    final cleaned = local.replaceAll(RegExp(r'[\._\-]+'), ' ').trim();
-    if (cleaned.isEmpty) return 'Unknown';
-    return cleaned
-        .split(' ')
-        .where((p) => p.trim().isNotEmpty)
-        .map((p) => p[0].toUpperCase() + p.substring(1))
-        .join(' ');
-  }
-
-  String get _displayName =>
-      _name.isNotEmpty ? _name : _deriveNameFromEmail(_email);
-
-  void _snack(String msg, {Color? color}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: color ?? Colors.black87),
-    );
-  }
+  bool _deleting = false;
 
   @override
   void initState() {
     super.initState();
-    _isAdmin = (widget.data['administrator'] ?? false) == true;
-    _isOperator = (widget.data['operator'] ?? false) == true;
+    final name = (widget.initialData['name'] ?? '').toString();
+    _nameController = TextEditingController(text: name);
+
+    _administrator = widget.initialData['administrator'] == true;
+    _operator = widget.initialData['operator'] == true;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _feedback(
+    bool ok,
+    String title,
+    String msg, {
+    List<String> affected = const [],
+  }) async {
+    if (!mounted) return;
+    await ActionFeedbackOverlay.show(
+      context,
+      success: ok,
+      title: title,
+      message: msg,
+      affected: affected,
+    );
   }
 
   Future<void> _save() async {
+    if (_saving) return;
     setState(() => _saving = true);
-    try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(widget.docId)
-          .update({'administrator': _isAdmin, 'operator': _isOperator});
 
-      if (mounted) Navigator.pop(context);
-      _snack('Saved.', color: Colors.green);
+    try {
+      final ref = FirebaseFirestore.instance
+          .collection('users')
+          .doc(widget.email);
+
+      await ref.set({
+        'name': _nameController.text.trim(),
+        'administrator': _administrator,
+        'operator': _operator,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (!mounted) return;
+
+      Navigator.pop(context, {
+        'updated': true,
+        'email': widget.email,
+        'name': _nameController.text.trim(),
+        'administrator': _administrator,
+        'operator': _operator,
+      });
     } catch (e) {
-      _snack('Error: $e', color: Colors.red);
+      await _feedback(
+        false,
+        'Update failed',
+        'Unable to update user access record.',
+        affected: ['User: ${widget.email}', 'Error: $e'],
+      );
+      if (!mounted) return;
+      Navigator.pop(context, {'error': e.toString()});
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
-  Widget _whiteCard({required Widget child}) {
+  Future<bool> _confirmDelete() async {
+    return (await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            title: const Text(
+              'Remove user access?',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
+            content: Text(
+              'This will delete the access record for:\n\n${widget.email}\n\n'
+              'They will no longer be able to sign in.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                onPressed: () => Navigator.of(ctx).pop(true),
+                icon: const Icon(Icons.delete),
+                label: const Text('Remove'),
+              ),
+            ],
+          ),
+        )) ??
+        false;
+  }
+
+  Future<void> _delete() async {
+    if (_deleting) return;
+    final ok = await _confirmDelete();
+    if (!ok) return;
+
+    setState(() => _deleting = true);
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(widget.email)
+          .delete();
+
+      if (!mounted) return;
+
+      Navigator.pop(context, {'deleted': true, 'email': widget.email});
+    } catch (e) {
+      await _feedback(
+        false,
+        'Remove failed',
+        'Unable to delete access record.',
+        affected: ['User: ${widget.email}', 'Error: $e'],
+      );
+      if (!mounted) return;
+      Navigator.pop(context, {'error': e.toString()});
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
+  }
+
+  Widget _card({required Widget child}) {
     return Container(
       margin: const EdgeInsets.all(16),
       padding: const EdgeInsets.all(16),
@@ -91,83 +185,80 @@ class _EditUserAccessScreenState extends State<EditUserAccessScreen> {
       backgroundColor: navy,
       appBar: AppBar(
         backgroundColor: navy,
+        iconTheme: const IconThemeData(color: Colors.white),
         title: const Text(
           'Edit User Access',
           style: TextStyle(color: Colors.white),
         ),
-        iconTheme: const IconThemeData(color: Colors.white),
+        actions: [
+          IconButton(
+            tooltip: 'Remove',
+            icon: _deleting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.delete),
+            onPressed: (_saving || _deleting) ? null : _delete,
+          ),
+        ],
       ),
       body: SafeArea(
-        child: _whiteCard(
+        child: _card(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                children: [
-                  CircleAvatar(
-                    radius: 28,
-                    backgroundColor: Colors.grey[200],
-                    backgroundImage: _photoUrl.isNotEmpty
-                        ? NetworkImage(_photoUrl)
-                        : null,
-                    child: _photoUrl.isEmpty
-                        ? Text(
-                            _displayName.isNotEmpty
-                                ? _displayName[0].toUpperCase()
-                                : "?",
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w900,
-                              color: Colors.black54,
-                            ),
-                          )
-                        : null,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _displayName,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          _email,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.black54,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
               const Text(
-                'Access',
+                'Email',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                widget.email,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.black87,
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Name (optional)',
                 style: TextStyle(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Administrator'),
-                value: _isAdmin,
-                onChanged: _saving
-                    ? null
-                    : (v) => setState(() => _isAdmin = v ?? false),
+              TextField(
+                controller: _nameController,
+                enabled: !_saving && !_deleting,
+                decoration: InputDecoration(
+                  hintText: 'Full name',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
               ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Operator'),
-                value: _isOperator,
-                onChanged: _saving
+              const SizedBox(height: 14),
+              const Text(
+                'Roles',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                title: const Text('Administrator'),
+                subtitle: const Text('Access to admin dashboard features'),
+                value: _administrator,
+                onChanged: (_saving || _deleting)
                     ? null
-                    : (v) => setState(() => _isOperator = v ?? false),
+                    : (v) => setState(() => _administrator = v),
+              ),
+              SwitchListTile(
+                title: const Text('Operator'),
+                subtitle: const Text('Access to scanning/operator features'),
+                value: _operator,
+                onChanged: (_saving || _deleting)
+                    ? null
+                    : (v) => setState(() => _operator = v),
               ),
               const Spacer(),
               ElevatedButton(
@@ -179,7 +270,7 @@ class _EditUserAccessScreenState extends State<EditUserAccessScreen> {
                     borderRadius: BorderRadius.circular(16),
                   ),
                 ),
-                onPressed: _saving ? null : _save,
+                onPressed: (_saving || _deleting) ? null : _save,
                 child: _saving
                     ? const SizedBox(
                         height: 18,
@@ -187,7 +278,7 @@ class _EditUserAccessScreenState extends State<EditUserAccessScreen> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Text(
-                        'SAVE',
+                        'SAVE CHANGES',
                         style: TextStyle(fontWeight: FontWeight.w900),
                       ),
               ),

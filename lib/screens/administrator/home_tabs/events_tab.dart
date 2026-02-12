@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../../../widgets/action_feedback.dart';
 import 'add_event_screen.dart';
 
 class EventsTab extends StatefulWidget {
@@ -12,6 +13,7 @@ class EventsTab extends StatefulWidget {
 
 class _EventsTabState extends State<EventsTab> {
   final _eventSearchController = TextEditingController();
+  bool _resetBusy = false;
 
   @override
   void initState() {
@@ -25,37 +27,115 @@ class _EventsTabState extends State<EventsTab> {
     super.dispose();
   }
 
-  void _snack(String msg, {Color? color}) {
+  Future<void> _feedbackSuccess(
+    String title,
+    String message, {
+    List<String> affected = const [],
+  }) async {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: color ?? Colors.black87),
+    await ActionFeedbackOverlay.show(
+      context,
+      success: true,
+      title: title,
+      message: message,
+      affected: affected,
     );
   }
 
-  Future<void> _toggleEventEnabled(String docId, bool currentlyEnabled) async {
+  Future<void> _feedbackError(
+    String title,
+    String message, {
+    List<String> affected = const [],
+  }) async {
+    if (!mounted) return;
+    await ActionFeedbackOverlay.show(
+      context,
+      success: false,
+      title: title,
+      message: message,
+      affected: affected,
+    );
+  }
+
+  Future<void> _toggleEventEnabled(
+    String docId,
+    bool currentlyEnabled,
+    String displayName,
+  ) async {
     try {
       await FirebaseFirestore.instance.collection('events').doc(docId).update({
         'isEnabled': !currentlyEnabled,
       });
+
+      await _feedbackSuccess(
+        'Event updated',
+        currentlyEnabled ? 'Event set to Inactive.' : 'Event set to Active.',
+        affected: [
+          'Event: $displayName',
+          'Status: ${currentlyEnabled ? 'Inactive' : 'Active'}',
+          'events/$docId updated',
+        ],
+      );
     } catch (e) {
-      _snack('Error updating event: $e', color: Colors.red);
+      await _feedbackError(
+        'Update failed',
+        'Unable to update event.',
+        affected: ['Event: $displayName', 'Error: $e'],
+      );
     }
   }
 
   Future<void> _resetAllEvents() async {
+    if (_resetBusy) return;
+
+    setState(() => _resetBusy = true);
     try {
       final eventsRef = FirebaseFirestore.instance.collection('events');
       final snap = await eventsRef.get();
-      final batch = FirebaseFirestore.instance.batch();
+
+      if (snap.docs.isEmpty) {
+        await _feedbackSuccess(
+          'Nothing to reset',
+          'No events were found.',
+          affected: const ['events: 0 record(s)'],
+        );
+        return;
+      }
+
+      // Firestore batch limit safety: commit in chunks.
+      const int batchLimit = 450;
+      int updated = 0;
+
+      WriteBatch batch = FirebaseFirestore.instance.batch();
+      int ops = 0;
 
       for (final d in snap.docs) {
         batch.update(d.reference, {'isEnabled': false});
+        ops++;
+        updated++;
+        if (ops >= batchLimit) {
+          await batch.commit();
+          batch = FirebaseFirestore.instance.batch();
+          ops = 0;
+        }
+      }
+      if (ops > 0) {
+        await batch.commit();
       }
 
-      await batch.commit();
-      _snack('All events set to Inactive.');
+      await _feedbackSuccess(
+        'Events reset',
+        'All events set to Inactive.',
+        affected: ['events: $updated record(s) updated', 'isEnabled = false'],
+      );
     } catch (e) {
-      _snack('Error resetting events: $e', color: Colors.red);
+      await _feedbackError(
+        'Reset failed',
+        'Unable to reset events.',
+        affected: ['Error: $e'],
+      );
+    } finally {
+      if (mounted) setState(() => _resetBusy = false);
     }
   }
 
@@ -92,9 +172,17 @@ class _EventsTabState extends State<EventsTab> {
             .collection('events')
             .doc(docId)
             .delete();
-        _snack('Event deleted.', color: Colors.green);
+        await _feedbackSuccess(
+          'Event deleted',
+          'Event removed successfully.',
+          affected: ['Event: $displayName', 'events/$docId deleted'],
+        );
       } catch (e) {
-        _snack('Error deleting event: $e', color: Colors.red);
+        await _feedbackError(
+          'Delete failed',
+          'Unable to delete event.',
+          affected: ['Event: $displayName', 'Error: $e'],
+        );
       }
     }
   }
@@ -116,15 +204,16 @@ class _EventsTabState extends State<EventsTab> {
     required VoidCallback onPressed,
     Color? color,
     String? tooltip,
+    bool disabled = false,
   }) {
     return IconButton(
       visualDensity: VisualDensity.compact,
       padding: EdgeInsets.zero,
       constraints: const BoxConstraints(),
-      iconSize: 18,
-      color: color,
+      iconSize: 22,
+      color: disabled ? Colors.grey : (color ?? Colors.black87),
       tooltip: tooltip,
-      onPressed: onPressed,
+      onPressed: disabled ? null : onPressed,
       icon: Icon(icon),
     );
   }
@@ -160,10 +249,17 @@ class _EventsTabState extends State<EventsTab> {
               Expanded(
                 child: TextField(
                   controller: _eventSearchController,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     hintText: 'Search events',
-                    border: OutlineInputBorder(),
+                    border: const OutlineInputBorder(),
                     isDense: true,
+                    suffixIcon: _eventSearchController.text.trim().isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Clear',
+                            onPressed: () => _eventSearchController.clear(),
+                            icon: const Icon(Icons.close),
+                          ),
                   ),
                 ),
               ),
@@ -172,6 +268,7 @@ class _EventsTabState extends State<EventsTab> {
                 icon: Icons.restart_alt,
                 color: Colors.orange,
                 tooltip: 'Set all to Inactive',
+                disabled: _resetBusy,
                 onPressed: _resetAllEvents,
               ),
               const SizedBox(width: 8),
@@ -180,10 +277,29 @@ class _EventsTabState extends State<EventsTab> {
                 color: Colors.green,
                 tooltip: 'Add Event',
                 onPressed: () async {
-                  await Navigator.push(
+                  final result = await Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const AddEventScreen()),
                   );
+
+                  if (result is Map) {
+                    final added = result['added'] == true;
+                    if (added) {
+                      final name = (result['eventName'] ?? '').toString();
+                      final label = (result['label'] ?? '').toString();
+                      final display = label.isEmpty ? name : '$name - $label';
+
+                      await _feedbackSuccess(
+                        'Event added',
+                        'New event created successfully.',
+                        affected: [
+                          if (display.trim().isNotEmpty) 'Event: $display',
+                          'events: +1 record',
+                          'Default status: Active',
+                        ],
+                      );
+                    }
+                  }
                 },
               ),
             ],
@@ -195,6 +311,9 @@ class _EventsTabState extends State<EventsTab> {
                   .collection('events')
                   .snapshots(),
               builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(child: Text('Error: ${snapshot.error}'));
+                }
                 if (!snapshot.hasData) {
                   return const Center(child: CircularProgressIndicator());
                 }
@@ -208,7 +327,7 @@ class _EventsTabState extends State<EventsTab> {
                   final bm = (b.data() as Map<String, dynamic>);
                   final aEn = (am['isEnabled'] == true);
                   final bEn = (bm['isEnabled'] == true);
-                  if (aEn != bEn) return bEn ? 1 : -1;
+                  if (aEn != bEn) return aEn ? -1 : 1;
 
                   final aName = (am['eventName'] ?? '')
                       .toString()
@@ -264,7 +383,7 @@ class _EventsTabState extends State<EventsTab> {
                             _statusButton(
                               enabled: enabled,
                               onPressed: () =>
-                                  _toggleEventEnabled(doc.id, enabled),
+                                  _toggleEventEnabled(doc.id, enabled, display),
                             ),
                             const SizedBox(width: 10),
                             _tinyIconButton(

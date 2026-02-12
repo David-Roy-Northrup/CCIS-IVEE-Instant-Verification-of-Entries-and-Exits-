@@ -1,14 +1,17 @@
 // lib/screens/operator/home_tabs/add_student_screen.dart
 //
-// Scanner-style Add/Edit Student screen
-// - No email/year level
-// - Validates Student ID format
+// Scanner-style Add/Edit Student screen (updated):
+// - No SnackBars (uses ActionFeedbackOverlay for errors)
+// - Validates Student ID format in Add mode
 // - Add mode: uses student ID as Firestore doc ID and prevents duplicates
-// - Edit mode: updates name/department/program (ID is read-only to avoid breaking attendance references)
+// - Edit mode: updates name/department/program (ID read-only)
+// - Returns a Map result to parent for success feedback + data affected
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
+import '../../../widgets/action_feedback.dart';
 
 /// Forces uppercase typing in TextFields.
 class UpperCaseTextFormatter extends TextInputFormatter {
@@ -72,10 +75,18 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
     super.dispose();
   }
 
-  void _snack(String msg, {Color? color}) {
+  Future<void> _feedbackError(
+    String title,
+    String message, {
+    List<String> affected = const [],
+  }) async {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: color ?? Colors.black87),
+    await ActionFeedbackOverlay.show(
+      context,
+      success: false,
+      title: title,
+      message: message,
+      affected: affected,
     );
   }
 
@@ -107,6 +118,11 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
         _programs = [];
         _loadingPrograms = false;
       });
+      await _feedbackError(
+        'Load failed',
+        'Unable to load programs list.',
+        affected: ['Error: $e'],
+      );
     }
   }
 
@@ -131,30 +147,47 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
 
     if (!_isEdit) {
       if (!_isValidStudentId(id)) {
-        _snack(
-          'Invalid ID. Use ####-####-# or ###### / #######.',
-          color: Colors.red,
+        await _feedbackError(
+          'Invalid Student ID',
+          'Use ####-####-# or ###### / #######.',
+          affected: ['Entered: $id'],
         );
         return;
       }
     } else {
       // Edit mode: ID is read-only; still ensure not blank
       if (id.isEmpty) {
-        _snack('Student ID is missing.', color: Colors.red);
+        await _feedbackError(
+          'Missing Student ID',
+          'Student ID is required.',
+          affected: const ['Field: Student ID'],
+        );
         return;
       }
     }
 
     if (name.isEmpty) {
-      _snack('Student name is required.', color: Colors.red);
+      await _feedbackError(
+        'Missing student name',
+        'Student name is required.',
+        affected: const ['Field: Student Name'],
+      );
       return;
     }
     if (_department.isEmpty) {
-      _snack('Department is required.', color: Colors.red);
+      await _feedbackError(
+        'Missing department',
+        'Department is required.',
+        affected: const ['Field: Department'],
+      );
       return;
     }
     if (_program.isEmpty) {
-      _snack('Program is required.', color: Colors.red);
+      await _feedbackError(
+        'Missing program',
+        'Program is required.',
+        affected: const ['Field: Program'],
+      );
       return;
     }
 
@@ -173,7 +206,15 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
         });
 
         if (!mounted) return;
-        Navigator.of(context).pop(true);
+        Navigator.of(context).pop({
+          'saved': true,
+          'mode': 'edit',
+          'docId': docId,
+          'id': id,
+          'name': name,
+          'department': _department,
+          'program': _program,
+        });
         return;
       }
 
@@ -181,8 +222,11 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
       final docRef = studentsRef.doc(id);
       final existing = await docRef.get();
       if (existing.exists) {
-        _snack('A student with this ID already exists.', color: Colors.red);
-        setState(() => _saving = false);
+        await _feedbackError(
+          'Duplicate Student ID',
+          'A student with this ID already exists.',
+          affected: ['Student ID: $id'],
+        );
         return;
       }
 
@@ -194,9 +238,21 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
       });
 
       if (!mounted) return;
-      Navigator.of(context).pop(true);
+      Navigator.of(context).pop({
+        'saved': true,
+        'mode': 'add',
+        'docId': id,
+        'id': id,
+        'name': name,
+        'department': _department,
+        'program': _program,
+      });
     } catch (e) {
-      _snack('Error saving student: $e', color: Colors.red);
+      await _feedbackError(
+        'Save failed',
+        'Unable to save student record.',
+        affected: ['Student ID: $id', 'Error: $e'],
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -207,7 +263,7 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
     const navy = Color(0xFF0A0F3C);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0A0F3C),
+      backgroundColor: navy,
       appBar: AppBar(
         backgroundColor: navy,
         foregroundColor: Colors.white,
@@ -260,9 +316,9 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
                     inputFormatters: [UpperCaseTextFormatter()],
                     textCapitalization: TextCapitalization.characters,
                     textAlign: TextAlign.center,
+                    enabled: !_saving,
                   ),
                   const SizedBox(height: 12),
-
                   Row(
                     children: [
                       Expanded(
@@ -274,8 +330,9 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
                                     DropdownMenuItem(value: d, child: Text(d)),
                               )
                               .toList(),
-                          onChanged: (v) =>
-                              setState(() => _department = v ?? ''),
+                          onChanged: _saving
+                              ? null
+                              : (v) => setState(() => _department = v ?? ''),
                           decoration: InputDecoration(
                             labelText: 'Department',
                             floatingLabelBehavior: FloatingLabelBehavior.always,
@@ -331,8 +388,9 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
                                       ),
                                     )
                                     .toList(),
-                                onChanged: (v) =>
-                                    setState(() => _program = v ?? ''),
+                                onChanged: _saving
+                                    ? null
+                                    : (v) => setState(() => _program = v ?? ''),
                                 decoration: InputDecoration(
                                   labelText: 'Program',
                                   floatingLabelBehavior:
@@ -353,9 +411,7 @@ class _AddStudentScreenState extends State<AddStudentScreen> {
                       ),
                     ],
                   ),
-
                   const SizedBox(height: 18),
-
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(

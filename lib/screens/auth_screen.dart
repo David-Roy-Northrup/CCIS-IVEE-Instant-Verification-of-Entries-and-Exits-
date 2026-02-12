@@ -10,7 +10,6 @@ import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import 'administrator/administrator.dart';
-import 'loading_screen.dart';
 import 'operator/operator.dart';
 import '../widgets/google_sign_in_panel.dart';
 
@@ -27,9 +26,47 @@ class _AuthScreenState extends State<AuthScreen> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   bool _showSignIn = false;
+  bool _isSigningIn = false;
+
+  GoogleSignInAccount? _savedGoogleAccount;
 
   static const String _logoGifAsset = 'assets/logo.gif';
   static const String _logoFallbackPng = 'assets/logo.png';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedAccount();
+  }
+
+  Future<void> _loadSavedAccount() async {
+    try {
+      final acc = await _googleSignIn.signInSilently();
+      if (!mounted) return;
+      setState(() => _savedGoogleAccount = acc);
+    } catch (_) {}
+  }
+
+  String _deriveNameFromEmail(String email) {
+    final e = email.trim().toLowerCase();
+    if (!e.contains('@')) return email;
+    final local = e.split('@').first;
+    final cleaned = local.replaceAll(RegExp(r'[\._\-]+'), ' ').trim();
+    if (cleaned.isEmpty) return email;
+    return cleaned
+        .split(' ')
+        .where((p) => p.trim().isNotEmpty)
+        .map((p) => p[0].toUpperCase() + p.substring(1))
+        .join(' ');
+  }
+
+  String? get _savedDisplayName {
+    final acc = _savedGoogleAccount;
+    if (acc == null) return null;
+    final dn = (acc.displayName ?? '').trim();
+    if (dn.isNotEmpty) return dn;
+    return _deriveNameFromEmail(acc.email);
+  }
 
   Future<void> _showErrorDialog(
     BuildContext context,
@@ -140,41 +177,55 @@ class _AuthScreenState extends State<AuthScreen> {
     );
   }
 
-  void _navigateWithRole(BuildContext context, String role) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => const LoadingScreen(message: "Signing in..."),
-      ),
-    );
+  void _navigateWithRole(String role) {
+    Widget screen;
+    switch (role) {
+      case "admin":
+        screen = const AdministratorMain();
+        break;
+      case "operator":
+        screen = const OperatorMain();
+        break;
+      default:
+        return;
+    }
 
-    Future.delayed(const Duration(milliseconds: 300), () {
-      Widget screen;
-      switch (role) {
-        case "admin":
-          screen = const AdministratorMain();
-          break;
-        case "operator":
-          screen = const OperatorMain();
-          break;
-        default:
-          return;
-      }
-
-      Navigator.of(
-        context,
-      ).pushReplacement(MaterialPageRoute(builder: (_) => screen));
-    });
+    Navigator.of(
+      context,
+    ).pushReplacement(MaterialPageRoute(builder: (_) => screen));
   }
 
-  Future<void> _signInWithGoogle(BuildContext context) async {
+  Future<void> _fullSignOut() async {
+    try {
+      await _auth.signOut();
+    } catch (_) {}
+    try {
+      await _googleSignIn.signOut();
+    } catch (_) {}
+  }
+
+  Future<void> _signInFlow({required bool interactive}) async {
+    if (_isSigningIn) return;
+
+    setState(() => _isSigningIn = true);
+
     try {
       final result = await InternetAddress.lookup('google.com');
       if (result.isEmpty || result[0].rawAddress.isEmpty) {
         throw const SocketException("No internet connection");
       }
 
-      final googleUser = await _googleSignIn.signIn();
-      if (googleUser == null) return;
+      GoogleSignInAccount? googleUser;
+      if (interactive) {
+        googleUser = await _googleSignIn.signIn();
+      } else {
+        googleUser =
+            _savedGoogleAccount ?? await _googleSignIn.signInSilently();
+      }
+
+      if (googleUser == null) {
+        return;
+      }
 
       final email = googleUser.email.toLowerCase().trim();
 
@@ -200,6 +251,7 @@ class _AuthScreenState extends State<AuthScreen> {
       final userDoc = await userDocRef.get();
 
       if (!userDoc.exists) {
+        await _fullSignOut();
         await _showErrorDialog(
           context,
           "Access Denied",
@@ -218,6 +270,7 @@ class _AuthScreenState extends State<AuthScreen> {
       ];
 
       if (enabledRoles.isEmpty) {
+        await _fullSignOut();
         await _showErrorDialog(
           context,
           "Access Denied",
@@ -236,16 +289,21 @@ class _AuthScreenState extends State<AuthScreen> {
         }, SetOptions(merge: true));
       }
 
+      if (mounted) {
+        setState(() => _savedGoogleAccount = googleUser);
+      }
+
       if (enabledRoles.length == 1) {
-        _navigateWithRole(context, enabledRoles.first);
+        _navigateWithRole(enabledRoles.first);
       } else {
+        if (mounted) setState(() => _isSigningIn = false);
         final selectedRole = await _showRoleSelectionDialog(
           context,
           isAdmin: isAdmin,
           isOperator: isOperator,
         );
         if (selectedRole != null) {
-          _navigateWithRole(context, selectedRole);
+          _navigateWithRole(selectedRole);
         }
       }
     } on SocketException {
@@ -260,6 +318,8 @@ class _AuthScreenState extends State<AuthScreen> {
         "Sign-In Error",
         "An unexpected error occurred while signing in.\n\nDetails: ${e.toString()}",
       );
+    } finally {
+      if (mounted) setState(() => _isSigningIn = false);
     }
   }
 
@@ -296,96 +356,135 @@ class _AuthScreenState extends State<AuthScreen> {
                 ? bottomHeightExpanded
                 : bottomHeightCollapsed;
 
-            return Column(
+            return Stack(
               children: [
-                Expanded(
-                  child: Stack(
-                    children: [
-                      Align(
-                        alignment: Alignment.center,
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 24),
-                          child: LoopingGifWithFallback(
-                            gifAsset: _logoGifAsset,
-                            fallbackPngAsset: _logoFallbackPng,
-                            width: 260,
-                            height: 260,
+                Column(
+                  children: [
+                    Expanded(
+                      child: Stack(
+                        children: [
+                          Align(
+                            alignment: Alignment.center,
+                            child: Padding(
+                              padding: const EdgeInsets.only(top: 24),
+                              child: LoopingGifWithFallback(
+                                gifAsset: _logoGifAsset,
+                                fallbackPngAsset: _logoFallbackPng,
+                                width: 260,
+                                height: 260,
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            bottom: 8,
+                            left: 0,
+                            right: 0,
+                            child: Column(
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Image.asset(
+                                      'assets/cjc_logo.png',
+                                      height: 40,
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Image.asset(
+                                      'assets/ccis_logo.png',
+                                      height: 40,
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                const Padding(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: 10.0,
+                                  ),
+                                  child: Text(
+                                    'Official Student Attendance System of the College of Computing and Information Sciences of Cor Jesu College, Inc.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: Colors.black87,
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 450),
+                      curve: Curves.easeInOut,
+                      height: bottomHeight,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: navy,
+                        borderRadius: BorderRadius.only(
+                          topLeft: Radius.elliptical(
+                            w * 0.1,
+                            bottomHeight * 0.1,
+                          ),
+                          topRight: Radius.elliptical(
+                            w * 0.1,
+                            bottomHeight * 0.1,
                           ),
                         ),
                       ),
-                      Positioned(
-                        bottom: 8,
-                        left: 0,
-                        right: 0,
-                        child: Column(
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Image.asset('assets/cjc_logo.png', height: 40),
-                                const SizedBox(width: 16),
-                                Image.asset('assets/ccis_logo.png', height: 40),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            const Padding(
-                              padding: EdgeInsets.symmetric(horizontal: 10.0),
-                              child: Text(
-                                'Official Student Attendance System of the College of Computing and Information Sciences of Cor Jesu College, Inc.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Colors.black87,
-                                  fontSize: 10,
-                                ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 18,
+                        ),
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 420),
+                          switchInCurve: Curves.easeOut,
+                          switchOutCurve: Curves.easeIn,
+                          transitionBuilder: (child, anim) {
+                            final slide = Tween<Offset>(
+                              begin: const Offset(0, 0.18),
+                              end: Offset.zero,
+                            ).animate(anim);
+
+                            return SlideTransition(
+                              position: slide,
+                              child: FadeTransition(
+                                opacity: anim,
+                                child: child,
                               ),
-                            ),
-                          ],
+                            );
+                          },
+                          child: _showSignIn
+                              ? GoogleSignInPanel(
+                                  key: const ValueKey('signInPanel'),
+                                  isBusy: _isSigningIn,
+                                  savedDisplayName: _savedDisplayName,
+                                  onPrimaryPressed: () => _signInFlow(
+                                    interactive: _savedGoogleAccount == null,
+                                  ),
+                                  onGooglePressed: () =>
+                                      _signInFlow(interactive: true),
+                                )
+                              : const PreparingSignIn(
+                                  key: ValueKey('preparing'),
+                                ),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 450),
-                  curve: Curves.easeInOut,
-                  height: bottomHeight,
-                  width: double.infinity,
-                  decoration: BoxDecoration(
-                    color: navy,
-                    borderRadius: BorderRadius.only(
-                      topLeft: Radius.elliptical(w * 0.1, bottomHeight * 0.1),
-                      topRight: Radius.elliptical(w * 0.1, bottomHeight * 0.1),
+                if (_isSigningIn)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      ignoring: false,
+                      child: Container(
+                        color: Colors.black45,
+                        child: const Center(child: _SigningInOverlay()),
+                      ),
                     ),
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 18,
-                    ),
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 420),
-                      switchInCurve: Curves.easeOut,
-                      switchOutCurve: Curves.easeIn,
-                      transitionBuilder: (child, anim) {
-                        final slide = Tween<Offset>(
-                          begin: const Offset(0, 0.18),
-                          end: Offset.zero,
-                        ).animate(anim);
-
-                        return SlideTransition(
-                          position: slide,
-                          child: FadeTransition(opacity: anim, child: child),
-                        );
-                      },
-                      child: _showSignIn
-                          ? GoogleSignInPanel(
-                              key: const ValueKey('signInPanel'),
-                              onSignInPressed: () => _signInWithGoogle(context),
-                            )
-                          : const PreparingSignIn(key: ValueKey('preparing')),
-                    ),
-                  ),
-                ),
               ],
             );
           },
@@ -395,27 +494,67 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 }
 
+class _SigningInOverlay extends StatelessWidget {
+  const _SigningInOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        margin: const EdgeInsets.symmetric(horizontal: 22),
+        decoration: BoxDecoration(
+          color: const Color(0xFF0A0F3C),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(color: Colors.white),
+            SizedBox(height: 14),
+            Text(
+              'Signing in…',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 15,
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ----------------------- original GIF widgets below -----------------------
 class PreparingSignIn extends StatelessWidget {
   const PreparingSignIn({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        SizedBox(height: 6),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: const [
+        CircularProgressIndicator(color: Colors.white),
+        SizedBox(height: 16),
         Text(
-          'Preparing sign-in...',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.white70, fontSize: 14),
+          'Preparing Sign-In…',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ],
     );
   }
 }
 
-/// Plays an asset GIF in a loop (decodes frames manually),
-/// falls back to a PNG if the GIF asset is missing/unreadable.
+/// Plays an asset GIF in a loop using frame decode.
+/// Falls back to PNG if GIF fails.
 class LoopingGifWithFallback extends StatefulWidget {
   final String gifAsset;
   final String fallbackPngAsset;
@@ -435,140 +574,75 @@ class LoopingGifWithFallback extends StatefulWidget {
 }
 
 class _LoopingGifWithFallbackState extends State<LoopingGifWithFallback> {
-  bool _gifFailed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    if (_gifFailed) {
-      return Image.asset(
-        widget.fallbackPngAsset,
-        width: widget.width,
-        height: widget.height,
-        fit: BoxFit.contain,
-      );
-    }
-
-    return LoopingGif(
-      assetPath: widget.gifAsset,
-      width: widget.width,
-      height: widget.height,
-      onError: () {
-        if (mounted) setState(() => _gifFailed = true);
-      },
-    );
-  }
-}
-
-class LoopingGif extends StatefulWidget {
-  final String assetPath;
-  final double width;
-  final double height;
-  final VoidCallback onError;
-
-  const LoopingGif({
-    super.key,
-    required this.assetPath,
-    required this.width,
-    required this.height,
-    required this.onError,
-  });
-
-  @override
-  State<LoopingGif> createState() => _LoopingGifState();
-}
-
-class _LoopingGifState extends State<LoopingGif> {
-  final List<ui.Image> _frames = <ui.Image>[];
-  final List<Duration> _durations = <Duration>[];
-
+  ui.Codec? _codec;
+  List<ui.FrameInfo> _frames = [];
   int _frameIndex = 0;
   Timer? _timer;
-  bool _loading = true;
+  bool _failed = false;
 
   @override
   void initState() {
     super.initState();
-    _loadAndLoop();
+    _loadGif();
+  }
+
+  Future<void> _loadGif() async {
+    try {
+      final data = await rootBundle.load(widget.gifAsset);
+      _codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+      _frames = [];
+      for (int i = 0; i < _codec!.frameCount; i++) {
+        final fi = await _codec!.getNextFrame();
+        _frames.add(fi);
+      }
+      _startLoop();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _failed = true);
+    }
+  }
+
+  void _startLoop() {
+    if (_frames.isEmpty) return;
+    _timer?.cancel();
+    _timer = Timer.periodic(
+      Duration(milliseconds: _frames[_frameIndex].duration.inMilliseconds),
+      (_) {
+        if (!mounted) return;
+        setState(() {
+          _frameIndex = (_frameIndex + 1) % _frames.length;
+        });
+      },
+    );
   }
 
   @override
   void dispose() {
     _timer?.cancel();
-    for (final img in _frames) {
-      try {
-        img.dispose();
-      } catch (_) {}
-    }
     super.dispose();
-  }
-
-  Future<void> _loadAndLoop() async {
-    try {
-      final data = await rootBundle.load(widget.assetPath);
-      final bytes = data.buffer.asUint8List();
-
-      final codec = await ui.instantiateImageCodec(bytes);
-
-      for (int i = 0; i < codec.frameCount; i++) {
-        final frameInfo = await codec.getNextFrame();
-        _frames.add(frameInfo.image);
-
-        final d = frameInfo.duration;
-        _durations.add(
-          (d == Duration.zero) ? const Duration(milliseconds: 60) : d,
-        );
-      }
-
-      if (!mounted || _frames.isEmpty) return;
-
-      setState(() {
-        _loading = false;
-        _frameIndex = 0;
-      });
-
-      _scheduleNextFrame();
-    } catch (_) {
-      widget.onError();
-    }
-  }
-
-  void _scheduleNextFrame() {
-    if (!mounted || _frames.isEmpty) return;
-
-    final delay = _durations[_frameIndex];
-    _timer?.cancel();
-    _timer = Timer(delay, () {
-      if (!mounted) return;
-
-      setState(() {
-        _frameIndex = (_frameIndex + 1) % _frames.length; // LOOP
-      });
-
-      _scheduleNextFrame();
-    });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
+    if (_failed) {
+      return Image.asset(
+        widget.fallbackPngAsset,
+        width: widget.width,
+        height: widget.height,
+      );
+    }
+    if (_frames.isEmpty) {
       return SizedBox(
         width: widget.width,
         height: widget.height,
         child: const Center(child: CircularProgressIndicator()),
       );
     }
-
-    return SizedBox(
+    return RawImage(
+      image: _frames[_frameIndex].image,
       width: widget.width,
       height: widget.height,
-      child: FittedBox(
-        fit: BoxFit.contain,
-        child: SizedBox(
-          width: widget.width,
-          height: widget.height,
-          child: RawImage(image: _frames[_frameIndex], fit: BoxFit.contain),
-        ),
-      ),
+      fit: BoxFit.contain,
     );
   }
 }
