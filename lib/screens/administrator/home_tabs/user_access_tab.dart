@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../../widgets/action_feedback.dart';
 import 'add_user_access_screen.dart';
@@ -14,6 +15,9 @@ class UserAccessTab extends StatefulWidget {
 
 class _UserAccessTabState extends State<UserAccessTab> {
   final TextEditingController _searchController = TextEditingController();
+
+  String get _currentUserEmail =>
+      (FirebaseAuth.instance.currentUser?.email ?? '').trim().toLowerCase();
 
   @override
   void initState() {
@@ -116,6 +120,24 @@ class _UserAccessTabState extends State<UserAccessTab> {
     return haystack.contains(q);
   }
 
+  // 1) Current user
+  // 2) Admin only
+  // 3) Admin & Operator
+  // 4) Operator only
+  // 5) No roles / others
+  int _accessRank({
+    required String email,
+    required bool isAdmin,
+    required bool isOperator,
+  }) {
+    final e = email.trim().toLowerCase();
+    if (_currentUserEmail.isNotEmpty && e == _currentUserEmail) return 0;
+    if (isAdmin && !isOperator) return 1;
+    if (isAdmin && isOperator) return 2;
+    if (!isAdmin && isOperator) return 3;
+    return 4;
+  }
+
   @override
   Widget build(BuildContext context) {
     final q = _searchController.text.trim().toLowerCase();
@@ -129,7 +151,7 @@ class _UserAccessTabState extends State<UserAccessTab> {
                 child: TextField(
                   controller: _searchController,
                   decoration: InputDecoration(
-                    hintText: 'Search users (name/email)',
+                    hintText: 'Search',
                     border: const OutlineInputBorder(),
                     isDense: true,
                     suffixIcon: _searchController.text.trim().isEmpty
@@ -144,7 +166,7 @@ class _UserAccessTabState extends State<UserAccessTab> {
               ),
               const SizedBox(width: 8),
 
-              // ✅ Add button matches Events tab style
+              // Add button (Events tab style)
               IconButton(
                 tooltip: 'Add User',
                 iconSize: 26,
@@ -159,18 +181,14 @@ class _UserAccessTabState extends State<UserAccessTab> {
 
                   if (result is Map && result['added'] == true) {
                     final email = (result['email'] ?? '').toString();
-                    final name = (result['name'] ?? '').toString();
                     final admin = result['administrator'] == true;
                     final op = result['operator'] == true;
 
                     await _feedbackSuccess(
                       'User added',
-                      'Access record created successfully.',
+                      'Access for $email created successfully.',
                       affected: [
-                        if (email.isNotEmpty) 'User: $email',
-                        if (name.isNotEmpty) 'Name: $name',
                         'Roles: ${[if (admin) 'Administrator', if (op) 'Operator', if (!admin && !op) 'None'].join(', ')}',
-                        'users: +1 record',
                       ],
                     );
                   }
@@ -195,25 +213,7 @@ class _UserAccessTabState extends State<UserAccessTab> {
 
                 final docs = snapshot.data!.docs.toList();
 
-                // sort by name/email
-                docs.sort((a, b) {
-                  final am = (a.data() as Map<String, dynamic>);
-                  final bm = (b.data() as Map<String, dynamic>);
-                  final aEmail = (am['email'] ?? a.id).toString().toLowerCase();
-                  final bEmail = (bm['email'] ?? b.id).toString().toLowerCase();
-                  final aName = (am['name'] ?? '')
-                      .toString()
-                      .trim()
-                      .toLowerCase();
-                  final bName = (bm['name'] ?? '')
-                      .toString()
-                      .trim()
-                      .toLowerCase();
-                  final ax = aName.isEmpty ? aEmail : aName;
-                  final bx = bName.isEmpty ? bEmail : bName;
-                  return ax.compareTo(bx);
-                });
-
+                // filter first
                 final filtered = docs.where((d) {
                   final m = (d.data() as Map<String, dynamic>);
                   final email = (m['email'] ?? d.id).toString();
@@ -223,6 +223,50 @@ class _UserAccessTabState extends State<UserAccessTab> {
                       : nameRaw;
                   return _matchesSearch(q, name, email);
                 }).toList();
+
+                // sort by rank, then name/email
+                filtered.sort((a, b) {
+                  final am = (a.data() as Map<String, dynamic>);
+                  final bm = (b.data() as Map<String, dynamic>);
+
+                  final aEmail = (am['email'] ?? a.id).toString();
+                  final bEmail = (bm['email'] ?? b.id).toString();
+
+                  final aAdmin = am['administrator'] == true;
+                  final aOp = am['operator'] == true;
+                  final bAdmin = bm['administrator'] == true;
+                  final bOp = bm['operator'] == true;
+
+                  final ar = _accessRank(
+                    email: aEmail,
+                    isAdmin: aAdmin,
+                    isOperator: aOp,
+                  );
+                  final br = _accessRank(
+                    email: bEmail,
+                    isAdmin: bAdmin,
+                    isOperator: bOp,
+                  );
+                  if (ar != br) return ar.compareTo(br);
+
+                  final aNameRaw = (am['name'] ?? '').toString().trim();
+                  final bNameRaw = (bm['name'] ?? '').toString().trim();
+                  final aName = aNameRaw.isEmpty
+                      ? _deriveNameFromEmail(aEmail)
+                      : aNameRaw;
+                  final bName = bNameRaw.isEmpty
+                      ? _deriveNameFromEmail(bEmail)
+                      : bNameRaw;
+
+                  final ax = aName.toLowerCase().trim().isEmpty
+                      ? aEmail.toLowerCase()
+                      : aName.toLowerCase();
+                  final bx = bName.toLowerCase().trim().isEmpty
+                      ? bEmail.toLowerCase()
+                      : bName.toLowerCase();
+
+                  return ax.compareTo(bx);
+                });
 
                 if (filtered.isEmpty) {
                   return Center(
@@ -246,7 +290,18 @@ class _UserAccessTabState extends State<UserAccessTab> {
                     final isAdmin = data['administrator'] == true;
                     final isOperator = data['operator'] == true;
 
+                    final isMe =
+                        _currentUserEmail.isNotEmpty &&
+                        email.trim().toLowerCase() == _currentUserEmail;
+
                     final roles = <Widget>[
+                      if (isMe)
+                        _roleChip(
+                          'Your account',
+                          bg: Colors.purple.shade50,
+                          fg: Colors.purple.shade800,
+                          icon: Icons.verified_user,
+                        ),
                       if (isAdmin)
                         _roleChip(
                           'Administrator',
@@ -261,7 +316,7 @@ class _UserAccessTabState extends State<UserAccessTab> {
                           fg: Colors.green.shade800,
                           icon: Icons.qr_code_scanner,
                         ),
-                      if (!isAdmin && !isOperator)
+                      if (!isAdmin && !isOperator && !isMe)
                         _roleChip(
                           'No roles',
                           bg: Colors.red.shade50,
@@ -337,30 +392,20 @@ class _UserAccessTabState extends State<UserAccessTab> {
                                     final op = result['operator'] == true;
                                     await _feedbackSuccess(
                                       'User updated',
-                                      'Access roles were updated successfully.',
+                                      "$email's roles were updated successfully.",
                                       affected: [
-                                        'User: $email',
                                         'Roles: ${[if (admin) 'Administrator', if (op) 'Operator', if (!admin && !op) 'None'].join(', ')}',
-                                        'users/$email updated',
                                       ],
                                     );
                                   } else if (result['deleted'] == true) {
                                     await _feedbackSuccess(
                                       'User removed',
-                                      'Access record was deleted successfully.',
-                                      affected: [
-                                        'User: $email',
-                                        'users/$email deleted',
-                                      ],
+                                      '$email was deleted successfully.',
                                     );
                                   } else if (result['error'] != null) {
                                     await _feedbackError(
                                       'Action failed',
                                       'Unable to complete request.',
-                                      affected: [
-                                        'User: $email',
-                                        'Error: ${result['error']}',
-                                      ],
                                     );
                                   }
                                 }

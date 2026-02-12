@@ -401,12 +401,34 @@ class _AuthScreenState extends State<AuthScreen> {
                                     horizontal: 10.0,
                                   ),
                                   child: Text(
-                                    'Official Student Attendance System of the College of Computing and Information Sciences of Cor Jesu College, Inc.',
+                                    'Official Student Attendance System of the College of Computing and Information Sciences of Cor Jesu College, Inc. and its affiliated Academic Organizations.',
                                     textAlign: TextAlign.center,
                                     style: TextStyle(
                                       color: Colors.black87,
                                       fontSize: 10,
                                     ),
+                                  ),
+                                ),
+
+                                // ✅ Added small footer text
+                                const SizedBox(height: 10),
+                                const Text(
+                                  'Developed by David Roy A. Northrup',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: Colors.black54,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                const Text(
+                                  '© CJC CCIS 2025',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: Colors.black54,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
                               ],

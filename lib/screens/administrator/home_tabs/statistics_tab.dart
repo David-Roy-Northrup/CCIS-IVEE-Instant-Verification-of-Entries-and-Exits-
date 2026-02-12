@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:excel/excel.dart' as xls;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,17 +22,22 @@ class _StatisticsTabState extends State<StatisticsTab> {
   static const String _defaultEvent = 'No event selected.';
 
   bool _loadingStats = true;
-
   String _selectedEvent = _defaultEvent;
 
   // Preloaded data
   int _totalStudents = 0;
   List<Map<String, String>> _students =
-      []; // {idNumber, studentName, department, program}
+      []; // {idNumber, studentName, dept, prog}
   List<String> _events = []; // unique events from attendanceLog
   Map<String, Set<String>> _attendedIdsByEvent =
       {}; // eventName -> {studentIDs}
   Map<String, Set<String>> _eventsByStudent = {}; // studentID -> {eventNames}
+
+  // Auto refresh
+  StreamSubscription? _studentsSub;
+  StreamSubscription? _attendanceSub;
+  Timer? _reloadDebounce;
+  bool _preloadInFlight = false;
 
   String get _todayPretty => DateFormat('MMMM dd, yyyy').format(DateTime.now());
   String get _todayDate => DateFormat('MM/dd/yyyy').format(DateTime.now());
@@ -44,6 +51,37 @@ class _StatisticsTabState extends State<StatisticsTab> {
   void initState() {
     super.initState();
     _preloadStatistics();
+    _startAutoRefresh();
+  }
+
+  void _startAutoRefresh() {
+    _studentsSub?.cancel();
+    _attendanceSub?.cancel();
+
+    _studentsSub = FirebaseFirestore.instance
+        .collection('students')
+        .snapshots()
+        .listen((_) => _scheduleReload());
+
+    _attendanceSub = FirebaseFirestore.instance
+        .collection('attendanceLog')
+        .snapshots()
+        .listen((_) => _scheduleReload());
+  }
+
+  void _scheduleReload() {
+    _reloadDebounce?.cancel();
+    _reloadDebounce = Timer(const Duration(milliseconds: 350), () {
+      _preloadStatistics();
+    });
+  }
+
+  @override
+  void dispose() {
+    _reloadDebounce?.cancel();
+    _studentsSub?.cancel();
+    _attendanceSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _feedback({
@@ -62,9 +100,12 @@ class _StatisticsTabState extends State<StatisticsTab> {
     );
   }
 
-  // -------------------- PRELOAD --------------------
+  // -------------------- PRELOAD (automatic) --------------------
   Future<void> _preloadStatistics() async {
     if (!mounted) return;
+    if (_preloadInFlight) return;
+    _preloadInFlight = true;
+
     setState(() => _loadingStats = true);
 
     try {
@@ -106,7 +147,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
         if (sid.isEmpty || ev.isEmpty) continue;
 
         eventSet.add(ev);
-
         attendedIdsByEvent.putIfAbsent(ev, () => <String>{}).add(sid);
         eventsByStudent.putIfAbsent(sid, () => <String>{}).add(ev);
       }
@@ -156,24 +196,25 @@ class _StatisticsTabState extends State<StatisticsTab> {
         message: 'Error loading statistics.',
         affected: ['Error: $e'],
       );
+    } finally {
+      _preloadInFlight = false;
     }
   }
 
-  // -------------------- CSV helpers --------------------
-  String _csvEscape(String v) {
-    final s = v.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-    if (s.contains(',') || s.contains('"') || s.contains('\n')) {
-      return '"${s.replaceAll('"', '""')}"';
-    }
-    return s;
-  }
+  // -------------------- Excel helpers --------------------
+  List<xls.TextCellValue> _rowToCells(List<String> row) =>
+      row.map((v) => xls.TextCellValue(v)).toList();
 
-  Future<File> _writeCsvToTemp(String csvText) async {
+  Future<File> _writeWorkbookToTemp(xls.Excel excel) async {
     final safeDate = DateFormat('yyyy-MM-dd').format(DateTime.now());
     final file = File(
-      '${Directory.systemTemp.path}/ivee_scanned_records_$safeDate.csv',
+      '${Directory.systemTemp.path}/ivee_records_$safeDate.xlsx',
     );
-    await file.writeAsString(csvText, flush: true);
+
+    final bytes = excel.save();
+    if (bytes == null) throw Exception('Failed to generate Excel bytes.');
+
+    await file.writeAsBytes(bytes, flush: true);
     return file;
   }
 
@@ -185,7 +226,7 @@ class _StatisticsTabState extends State<StatisticsTab> {
     final email = Email(
       subject: subject,
       body: body,
-      recipients: const [], // user selects recipient
+      recipients: const [],
       attachmentPaths: [attachmentPath],
       isHTML: false,
     );
@@ -253,7 +294,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
       }
       await batch.commit();
     }
-
     return deleted;
   }
 
@@ -283,8 +323,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
           'deleteLog: +1 record',
         ],
       );
-
-      await _preloadStatistics();
     } catch (e) {
       await _feedback(
         success: false,
@@ -321,8 +359,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
           'deleteLog: +1 record',
         ],
       );
-
-      await _preloadStatistics();
     } catch (e) {
       await _feedback(
         success: false,
@@ -333,33 +369,78 @@ class _StatisticsTabState extends State<StatisticsTab> {
     }
   }
 
-  // -------------------- Send Data --------------------
-  Future<void> _sendDataAsCsv() async {
+  Future<void> _clearDeleteRecords() async {
+    final confirm = await _confirmDanger(
+      title: 'Clear Delete Records',
+      message:
+          'This will permanently delete ALL deleteLog records.\n\nThis action cannot be undone.',
+      confirmText: 'Clear Delete Records',
+    );
+    if (!confirm) return;
+
     try {
-      // Ensure preloaded data exists
+      final deleted = await _deleteAllInCollection('deleteLog');
+
+      await _feedback(
+        success: true,
+        title: 'Delete records cleared',
+        message: 'All delete records were removed.',
+        affected: ['deleteLog: $deleted record(s) removed'],
+      );
+    } catch (e) {
+      await _feedback(
+        success: false,
+        title: 'Clear failed',
+        message: 'Error clearing delete records.',
+        affected: ['Error: $e'],
+      );
+    }
+  }
+
+  // -------------------- Send Data (Excel with 2 sheets) --------------------
+  Future<void> _sendDataAsCsv() async {
+    // (kept name so you don't have to refactor callers)
+    try {
       if (_loadingStats) {
         await _feedback(
           success: false,
           title: 'Please wait',
           message: 'Statistics are still loading.',
-          affected: const ['Action: Email Attendance Log'],
+          affected: const ['Action: Email Records'],
         );
         return;
       }
 
-      // Events must come from attendanceLog only (already preloaded)
+      // Load delete log
+      final deleteSnap = await FirebaseFirestore.instance
+          .collection('deleteLog')
+          .get();
+
+      final deleteDocs = deleteSnap.docs.toList();
+
+      // Build workbook
+      final xls.Excel excel = xls.Excel.createExcel();
+
+      // Rename default Sheet1 -> Attendance Log (so you only end with 2 sheets total)
+      if (excel.sheets.keys.contains('Sheet1')) {
+        excel.rename('Sheet1', 'Attendance Log');
+      }
+      excel.setDefaultSheet('Attendance Log');
+
+      final xls.Sheet attendanceSheet = excel['Attendance Log'];
+
+      // Sheet 1: Attendance Log (same matrix you already generate)
       final events = List<String>.from(_events);
 
-      final header = <String>[
-        'Department',
-        'Program',
-        'Student ID',
-        'Student Name',
-        ...events,
-      ];
-
-      final lines = <String>[];
-      lines.add(header.map(_csvEscape).join(','));
+      attendanceSheet.appendRow(
+        _rowToCells([
+          'Department',
+          'Program',
+          'Student ID',
+          'Student Name',
+          ...events,
+        ]),
+      );
 
       for (final s in _students) {
         final dept = (s['department'] ?? '');
@@ -369,26 +450,51 @@ class _StatisticsTabState extends State<StatisticsTab> {
 
         final set = _eventsByStudent[id] ?? <String>{};
 
-        final row = <String>[
-          dept,
-          prog,
-          id,
-          name,
-          ...events.map((ev) => set.contains(ev) ? '✔' : ''),
-        ];
-
-        lines.add(row.map(_csvEscape).join(','));
+        attendanceSheet.appendRow(
+          _rowToCells([
+            dept,
+            prog,
+            id,
+            name,
+            ...events.map((ev) => set.contains(ev) ? '✔' : ''),
+          ]),
+        );
       }
 
-      final csvText = lines.join('\n');
+      // Sheet 2: Delete Log
+      final xls.Sheet deleteSheet = excel['Delete Log'];
 
-      // 1) Generate CSV file first
-      final file = await _writeCsvToTemp(csvText);
+      deleteSheet.appendRow(
+        _rowToCells([
+          'Date',
+          'Time',
+          'Operator',
+          'Type',
+          'Student ID',
+          'Remarks',
+        ]),
+      );
 
-      // 2) Then open email app with attachment
-      final subject = 'IVEE Scanned Records as of $_todayPretty';
+      for (final d in deleteDocs) {
+        final m = d.data();
+        deleteSheet.appendRow(
+          _rowToCells([
+            (m['date'] ?? '').toString(),
+            (m['time'] ?? '').toString(),
+            (m['operator'] ?? '').toString(),
+            (m['type'] ?? '').toString(),
+            (m['studentID'] ?? '').toString(),
+            (m['remarks'] ?? '').toString(),
+          ]),
+        );
+      }
+
+      final file = await _writeWorkbookToTemp(excel);
+
+      final subject = 'IVEE Records as of $_todayPretty';
       final body =
-          'Attached is the IVEE Scanned Records CSV as of $_todayPretty.\n\nGenerated by IVEE Admin.';
+          'Attached is the IVEE Records Excel file as of $_todayPretty.\n\n'
+          'Generated by IVEE Admin.';
 
       try {
         await _openEmailWithAttachment(
@@ -396,24 +502,12 @@ class _StatisticsTabState extends State<StatisticsTab> {
           body: body,
           attachmentPath: file.path,
         );
-
-        await _feedback(
-          success: true,
-          title: 'Email ready',
-          message: 'Email app opened with the CSV attached.',
-          affected: [
-            'Attachment: ${file.path}',
-            'Students: $_totalStudents',
-            'Events: ${events.length}',
-          ],
-        );
       } on PlatformException catch (e) {
-        // Common: "No email clients found!"
         await _feedback(
           success: false,
           title: 'No email app found',
           message:
-              'CSV was generated, but no email app was found. Install/configure an email client and try again.',
+              'Excel file was generated, but no email app was found. Install/configure an email client and try again.',
           affected: [
             'Attachment: ${file.path}',
             'Details: ${e.message ?? e.code}',
@@ -424,7 +518,7 @@ class _StatisticsTabState extends State<StatisticsTab> {
       await _feedback(
         success: false,
         title: 'Export failed',
-        message: 'Error generating/sending CSV.',
+        message: 'Error generating/sending Excel file.',
         affected: ['Error: $e'],
       );
     }
@@ -440,65 +534,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
         borderRadius: BorderRadius.circular(16),
       ),
       child: child,
-    );
-  }
-
-  Widget _statCard({
-    required String title,
-    required String value,
-    IconData icon = Icons.analytics_outlined,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.black12),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x0F000000),
-            blurRadius: 10,
-            offset: Offset(0, 4),
-          ),
-        ],
-        color: Colors.white,
-      ),
-      child: Row(
-        children: [
-          Container(
-            height: 44,
-            width: 44,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              color: Colors.grey.shade100,
-            ),
-            child: Icon(icon, color: Colors.black87),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.black54,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -571,33 +606,12 @@ class _StatisticsTabState extends State<StatisticsTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'STATISTICS',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ),
-              IconButton(
-                tooltip: 'Refresh',
-                onPressed: _preloadStatistics,
-                icon: const Icon(Icons.refresh),
-              ),
-            ],
+          const Text(
+            'STATISTICS',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 10),
 
-          // Students count card (preloaded)
-          _statCard(
-            title: 'Students on record',
-            value: _loadingStats ? '...' : _totalStudents.toString(),
-            icon: Icons.people_alt_outlined,
-          ),
-
-          const SizedBox(height: 12),
-
-          // Event attendance dashboard (preloaded) - while loading show ONLY "Loading Statistics"
           if (_loadingStats)
             _loadingDashboard()
           else
@@ -627,7 +641,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
                     ),
                   ),
                   const SizedBox(height: 8),
-
                   DropdownButtonFormField<String>(
                     value: _selectedEvent,
                     items: <String>[_defaultEvent, ..._events]
@@ -638,11 +651,8 @@ class _StatisticsTabState extends State<StatisticsTab> {
                           ),
                         )
                         .toList(),
-                    onChanged: (v) {
-                      setState(() {
-                        _selectedEvent = v ?? _defaultEvent;
-                      });
-                    },
+                    onChanged: (v) =>
+                        setState(() => _selectedEvent = v ?? _defaultEvent),
                     decoration: InputDecoration(
                       isDense: true,
                       border: OutlineInputBorder(
@@ -650,7 +660,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
                       ),
                     ),
                   ),
-
                   const SizedBox(height: 12),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
@@ -700,7 +709,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
 
           const SizedBox(height: 12),
 
-          // Action buttons
           Row(
             children: [
               Expanded(
@@ -765,6 +773,30 @@ class _StatisticsTabState extends State<StatisticsTab> {
                   icon: const Icon(Icons.person_remove_alt_1),
                   label: const Text(
                     'Clear Student Records',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: const BorderSide(color: Colors.red),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  onPressed: _clearDeleteRecords,
+                  icon: const Icon(Icons.delete_forever),
+                  label: const Text(
+                    'Clear Delete Records',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),

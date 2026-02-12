@@ -28,11 +28,11 @@ class AdministratorHome extends StatelessWidget {
             labelColor: Colors.white,
             unselectedLabelColor: Colors.white70,
             tabs: [
-              Tab(icon: Icon(Icons.school_outlined), text: 'Students'),
-              Tab(icon: Icon(Icons.event_note), text: 'Events'),
-              Tab(icon: Icon(Icons.list_alt), text: 'Attendance'),
-              Tab(icon: Icon(Icons.delete_sweep), text: 'Delete Log'),
-              Tab(icon: Icon(Icons.analytics_outlined), text: 'Statistics'),
+              Tab(icon: Icon(Icons.school_outlined)),
+              Tab(icon: Icon(Icons.event_note)),
+              Tab(icon: Icon(Icons.list_alt)),
+              Tab(icon: Icon(Icons.delete_sweep)),
+              Tab(icon: Icon(Icons.analytics_outlined)),
               Tab(
                 icon: Icon(Icons.supervised_user_circle),
                 text: 'User Access',

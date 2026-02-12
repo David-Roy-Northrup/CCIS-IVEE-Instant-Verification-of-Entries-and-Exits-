@@ -16,6 +16,9 @@ class Settings extends StatefulWidget {
 class _SettingsState extends State<Settings> {
   final User? user = FirebaseAuth.instance.currentUser;
 
+  // IMPORTANT: match AuthScreen config
+  final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: ['email']);
+
   Future<void> _showErrorDialog(
     BuildContext context,
     String title,
@@ -67,7 +70,7 @@ class _SettingsState extends State<Settings> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         title: const Text("Confirm Logout"),
         content: const Text(
-          "Are you sure you want to log out? You will need to reselect your account at login.",
+          "Are you sure you want to log out?\n\nYou will need to reselect your account at login.",
         ),
         actions: [
           TextButton(
@@ -96,19 +99,30 @@ class _SettingsState extends State<Settings> {
 
   Future<void> _logout(BuildContext context) async {
     try {
+      // 1) Firebase sign out
       await FirebaseAuth.instance.signOut();
-      final googleSignIn = GoogleSignIn();
-      if (await googleSignIn.isSignedIn()) {
-        await googleSignIn.signOut();
-      }
 
+      // 2) Google sign out (local) + disconnect (revokes + clears cached account)
+      // disconnect can throw if not currently connected; ignore safely
+      try {
+        await _googleSignIn.disconnect();
+      } catch (_) {}
+      try {
+        await _googleSignIn.signOut();
+      } catch (_) {}
+
+      // 3) Go back to AuthScreen and clear navigation stack
+      if (!mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (context) => AuthScreen()),
+        MaterialPageRoute(builder: (context) => const AuthScreen()),
         (route) => false,
       );
     } catch (_) {
-      Navigator.pop(context); // remove loading
+      // remove loading
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
       await _showErrorDialog(
         context,
         "Logout Failed",

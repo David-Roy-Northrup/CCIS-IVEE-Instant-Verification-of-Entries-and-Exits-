@@ -1,16 +1,13 @@
 // lib/screens/administrator/home_tabs/delete_log_tab.dart
 //
 // Delete Log tab — displays deletion audit logs stored in Firestore collection: `deleteLog`.
-// UI mirrors Attendance Log cards, but replaces the date dropdown with a search bar,
-// and includes a "Clear Logs" button that deletes all documents in `deleteLog`.
+// UI mirrors Attendance Log cards, but replaces the date dropdown with a search bar.
 //
 // SnackBars are NOT used. Feedback is shown using ActionFeedbackOverlay.
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-
-import '../../../widgets/action_feedback.dart';
 
 class DeleteLogTab extends StatefulWidget {
   const DeleteLogTab({super.key});
@@ -22,7 +19,6 @@ class DeleteLogTab extends StatefulWidget {
 class _DeleteLogTabState extends State<DeleteLogTab> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
-  bool _isClearing = false;
 
   DateTime _parseDateTimeOrFallback(String date, String time) {
     try {
@@ -48,114 +44,6 @@ class _DeleteLogTabState extends State<DeleteLogTab> {
   void dispose() {
     _searchController.dispose();
     super.dispose();
-  }
-
-  Future<bool> _confirmClearLogs() async {
-    return (await showDialog<bool>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
-            ),
-            title: const Text(
-              'Clear Delete Logs?',
-              style: TextStyle(fontWeight: FontWeight.w800),
-            ),
-            content: const Text(
-              'This will permanently remove ALL delete log entries.\n\n'
-              'You can’t undo this action.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-                onPressed: () => Navigator.of(ctx).pop(true),
-                icon: const Icon(Icons.delete_sweep),
-                label: const Text('Clear Logs'),
-              ),
-            ],
-          ),
-        )) ??
-        false;
-  }
-
-  Future<void> _clearLogs() async {
-    if (_isClearing) return;
-
-    final ok = await _confirmClearLogs();
-    if (!ok) return;
-
-    setState(() => _isClearing = true);
-
-    try {
-      final col = FirebaseFirestore.instance.collection('deleteLog');
-      final snap = await col.get();
-
-      final total = snap.docs.length;
-      if (total == 0) {
-        if (!mounted) return;
-        await ActionFeedbackOverlay.show(
-          context,
-          success: true,
-          title: 'Nothing to clear',
-          message: 'Delete log is already empty.',
-          affected: const ['deleteLog: 0 record(s)'],
-        );
-        return;
-      }
-
-      // Firestore batch limit safety: use chunks.
-      const int batchLimit = 450;
-      int deleted = 0;
-
-      WriteBatch batch = FirebaseFirestore.instance.batch();
-      int ops = 0;
-
-      for (final doc in snap.docs) {
-        batch.delete(doc.reference);
-        ops++;
-        deleted++;
-
-        if (ops >= batchLimit) {
-          await batch.commit();
-          batch = FirebaseFirestore.instance.batch();
-          ops = 0;
-        }
-      }
-
-      if (ops > 0) {
-        await batch.commit();
-      }
-
-      if (!mounted) return;
-      await ActionFeedbackOverlay.show(
-        context,
-        success: true,
-        title: 'Logs cleared',
-        message: 'All delete log records have been removed.',
-        affected: ['deleteLog: $deleted record(s) removed'],
-      );
-    } catch (e) {
-      if (!mounted) return;
-      await ActionFeedbackOverlay.show(
-        context,
-        success: false,
-        title: 'Clear failed',
-        message: 'Unable to clear logs.',
-        affected: ['Error: $e'],
-      );
-    } finally {
-      if (mounted) setState(() => _isClearing = false);
-    }
   }
 
   Widget _whitePane({required Widget child}) {
@@ -207,8 +95,10 @@ class _DeleteLogTabState extends State<DeleteLogTab> {
     return TextField(
       controller: _searchController,
       decoration: InputDecoration(
-        hintText: 'Search (student ID, operator, remarks, date, type)…',
+        hintText: 'Search',
         prefixIcon: const Icon(Icons.search),
+        border: const OutlineInputBorder(),
+        isDense: true,
         suffixIcon: _searchQuery.isEmpty
             ? null
             : IconButton(
@@ -218,10 +108,6 @@ class _DeleteLogTabState extends State<DeleteLogTab> {
               ),
         filled: true,
         fillColor: Colors.grey.shade100,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide.none,
-        ),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 12,
           vertical: 12,
@@ -336,45 +222,12 @@ class _DeleteLogTabState extends State<DeleteLogTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header row (title + clear logs)
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'DELETE LOG',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ),
-              ElevatedButton.icon(
-                onPressed: _isClearing ? null : _clearLogs,
-                icon: _isClearing
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Icon(Icons.delete_sweep),
-                label: Text(_isClearing ? 'Clearing…' : 'Clear Logs'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-            ],
+          const Text(
+            'DELETE LOG',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 10),
 
-          // Search bar (replaces dropdown)
           _searchBar(),
           const SizedBox(height: 10),
 
@@ -393,7 +246,6 @@ class _DeleteLogTabState extends State<DeleteLogTab> {
 
                 final docs = (snapshot.data?.docs ?? []).toList();
 
-                // Map + filter
                 final filtered = <Map<String, dynamic>>[];
                 for (final d in docs) {
                   final data = (d.data() as Map<String, dynamic>);
@@ -402,7 +254,6 @@ class _DeleteLogTabState extends State<DeleteLogTab> {
                   }
                 }
 
-                // Sort newest first (date+time)
                 filtered.sort((a, b) {
                   final ad = (a['date'] ?? '').toString();
                   final at = (a['time'] ?? '').toString();

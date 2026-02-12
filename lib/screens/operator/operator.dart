@@ -3,7 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 
-import 'operator_home.dart';
+import '/screens/administrator/home_tabs/attendance_log_tab.dart';
+import '/screens/administrator/home_tabs/delete_log_tab.dart';
 import 'operator_scanner.dart';
 import 'operator_settings.dart';
 
@@ -20,9 +21,11 @@ class _OperatorMainState extends State<OperatorMain> {
 
   late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
 
+  // 1) Scanner 2) Attendance Log 3) Delete Log 4) Settings
   final List<Widget> _pages = const [
-    OperatorHome(),
     OperatorScanner(),
+    AttendanceLogTab(),
+    DeleteLogTab(),
     OperatorSettings(),
   ];
 
@@ -51,7 +54,7 @@ class _OperatorMainState extends State<OperatorMain> {
         _hasInternet = connected;
 
         if (_hasInternet) {
-          // Go back to home screen when back online
+          // Go back to first tab (Scanner) when back online
           _selectedIndex = 0;
         }
       });
@@ -65,7 +68,7 @@ class _OperatorMainState extends State<OperatorMain> {
   }
 
   void _onItemTapped(int index) {
-    if (!_hasInternet) return; // disable buttons when offline
+    if (!_hasInternet) return;
     setState(() => _selectedIndex = index);
   }
 
@@ -85,7 +88,6 @@ class _OperatorMainState extends State<OperatorMain> {
     const grayBtn = Colors.grey;
 
     return WillPopScope(
-      // BLOCK Android back button + back swipe/gesture
       onWillPop: () async => false,
       child: Scaffold(
         backgroundColor: navy,
@@ -127,17 +129,6 @@ class _OperatorMainState extends State<OperatorMain> {
             destinations: [
               NavigationDestination(
                 icon: Icon(
-                  Icons.home_outlined,
-                  color: _hasInternet ? Colors.white : grayBtn,
-                ),
-                selectedIcon: Icon(
-                  Icons.home,
-                  color: _hasInternet ? navy : grayBtn,
-                ),
-                label: 'Home',
-              ),
-              NavigationDestination(
-                icon: Icon(
                   Icons.add_circle_outline,
                   color: _hasInternet ? Colors.white : grayBtn,
                 ),
@@ -145,7 +136,29 @@ class _OperatorMainState extends State<OperatorMain> {
                   Icons.add_circle,
                   color: _hasInternet ? navy : grayBtn,
                 ),
-                label: 'Scan',
+                label: 'Scanner',
+              ),
+              NavigationDestination(
+                icon: Icon(
+                  Icons.list_alt_outlined,
+                  color: _hasInternet ? Colors.white : grayBtn,
+                ),
+                selectedIcon: Icon(
+                  Icons.list_alt,
+                  color: _hasInternet ? navy : grayBtn,
+                ),
+                label: 'Attendance',
+              ),
+              NavigationDestination(
+                icon: Icon(
+                  Icons.delete_outline,
+                  color: _hasInternet ? Colors.white : grayBtn,
+                ),
+                selectedIcon: Icon(
+                  Icons.delete,
+                  color: _hasInternet ? navy : grayBtn,
+                ),
+                label: 'Delete',
               ),
               NavigationDestination(
                 icon: Icon(

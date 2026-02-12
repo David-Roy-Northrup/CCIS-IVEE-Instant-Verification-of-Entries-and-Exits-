@@ -27,21 +27,6 @@ class _EventsTabState extends State<EventsTab> {
     super.dispose();
   }
 
-  Future<void> _feedbackSuccess(
-    String title,
-    String message, {
-    List<String> affected = const [],
-  }) async {
-    if (!mounted) return;
-    await ActionFeedbackOverlay.show(
-      context,
-      success: true,
-      title: title,
-      message: message,
-      affected: affected,
-    );
-  }
-
   Future<void> _feedbackError(
     String title,
     String message, {
@@ -66,20 +51,10 @@ class _EventsTabState extends State<EventsTab> {
       await FirebaseFirestore.instance.collection('events').doc(docId).update({
         'isEnabled': !currentlyEnabled,
       });
-
-      await _feedbackSuccess(
-        'Event updated',
-        currentlyEnabled ? 'Event set to Inactive.' : 'Event set to Active.',
-        affected: [
-          'Event: $displayName',
-          'Status: ${currentlyEnabled ? 'Inactive' : 'Active'}',
-          'events/$docId updated',
-        ],
-      );
     } catch (e) {
       await _feedbackError(
         'Update failed',
-        'Unable to update event.',
+        'Unable to update event status.',
         affected: ['Event: $displayName', 'Error: $e'],
       );
     }
@@ -93,26 +68,13 @@ class _EventsTabState extends State<EventsTab> {
       final eventsRef = FirebaseFirestore.instance.collection('events');
       final snap = await eventsRef.get();
 
-      if (snap.docs.isEmpty) {
-        await _feedbackSuccess(
-          'Nothing to reset',
-          'No events were found.',
-          affected: const ['events: 0 record(s)'],
-        );
-        return;
-      }
-
-      // Firestore batch limit safety: commit in chunks.
       const int batchLimit = 450;
-      int updated = 0;
-
       WriteBatch batch = FirebaseFirestore.instance.batch();
       int ops = 0;
 
       for (final d in snap.docs) {
         batch.update(d.reference, {'isEnabled': false});
         ops++;
-        updated++;
         if (ops >= batchLimit) {
           await batch.commit();
           batch = FirebaseFirestore.instance.batch();
@@ -122,12 +84,6 @@ class _EventsTabState extends State<EventsTab> {
       if (ops > 0) {
         await batch.commit();
       }
-
-      await _feedbackSuccess(
-        'Events reset',
-        'All events set to Inactive.',
-        affected: ['events: $updated record(s) updated', 'isEnabled = false'],
-      );
     } catch (e) {
       await _feedbackError(
         'Reset failed',
@@ -172,11 +128,6 @@ class _EventsTabState extends State<EventsTab> {
             .collection('events')
             .doc(docId)
             .delete();
-        await _feedbackSuccess(
-          'Event deleted',
-          'Event removed successfully.',
-          affected: ['Event: $displayName', 'events/$docId deleted'],
-        );
       } catch (e) {
         await _feedbackError(
           'Delete failed',
@@ -250,7 +201,7 @@ class _EventsTabState extends State<EventsTab> {
                 child: TextField(
                   controller: _eventSearchController,
                   decoration: InputDecoration(
-                    hintText: 'Search events',
+                    hintText: 'Search',
                     border: const OutlineInputBorder(),
                     isDense: true,
                     suffixIcon: _eventSearchController.text.trim().isEmpty
@@ -277,28 +228,18 @@ class _EventsTabState extends State<EventsTab> {
                 color: Colors.green,
                 tooltip: 'Add Event',
                 onPressed: () async {
-                  final result = await Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AddEventScreen()),
-                  );
-
-                  if (result is Map) {
-                    final added = result['added'] == true;
-                    if (added) {
-                      final name = (result['eventName'] ?? '').toString();
-                      final label = (result['label'] ?? '').toString();
-                      final display = label.isEmpty ? name : '$name - $label';
-
-                      await _feedbackSuccess(
-                        'Event added',
-                        'New event created successfully.',
-                        affected: [
-                          if (display.trim().isNotEmpty) 'Event: $display',
-                          'events: +1 record',
-                          'Default status: Active',
-                        ],
-                      );
-                    }
+                  try {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const AddEventScreen()),
+                    );
+                    // ✅ No action_feedback on success (per your request)
+                  } catch (e) {
+                    await _feedbackError(
+                      'Add failed',
+                      'Unable to open/add event.',
+                      affected: ['Error: $e'],
+                    );
                   }
                 },
               ),
@@ -321,7 +262,6 @@ class _EventsTabState extends State<EventsTab> {
                 final q = _eventSearchController.text.trim().toLowerCase();
                 final docs = snapshot.data!.docs.toList();
 
-                // Sort enabled first then name
                 docs.sort((a, b) {
                   final am = (a.data() as Map<String, dynamic>);
                   final bm = (b.data() as Map<String, dynamic>);
