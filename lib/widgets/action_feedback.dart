@@ -14,6 +14,7 @@ class ActionFeedbackOverlay {
     Duration duration = const Duration(seconds: 4),
   }) async {
     final overlay = Overlay.of(context, rootOverlay: true);
+    // ignore: unnecessary_null_comparison
     if (overlay == null) return;
 
     late OverlayEntry entry;
