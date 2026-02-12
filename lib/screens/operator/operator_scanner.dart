@@ -1,4 +1,18 @@
 // lib/screens/operator/operator_scanner.dart
+//
+// ✅ Update: Background event schedule enforcer (silent)
+// - While this screen is open, it periodically checks ALL events in Firestore.
+// - If an event has startAt/endAt set, it auto-updates isEnabled to match the schedule:
+//    * now < startAt                       -> INACTIVE
+//    * startAt <= now < endAt (or endAt=null) -> ACTIVE
+//    * now >= endAt                        -> INACTIVE
+//    * only endAt and now < endAt          -> ACTIVE
+// - If an event has no schedule (no startAt and no endAt), it is NOT modified.
+// - Runs silently: no dialogs/snackbars. If the user lacks permission to update events,
+//   it will simply fail quietly.
+// - This is "background" only while this page is open. For true always-on background,
+//   use a Cloud Function / server job.
+
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -44,14 +58,21 @@ class _OperatorScannerState extends State<OperatorScanner>
   bool _loadingPrograms = true;
 
   Timer? _scanDebounce;
-
   bool _scannerExpanded = true;
+
+  // ✅ Background schedule enforcement
+  Timer? _eventScheduleTimer;
+  bool _scheduleSyncInFlight = false;
+  final Set<String> _autoBusy = <String>{}; // prevent spam updates per doc
 
   @override
   void initState() {
     super.initState();
 
     _fetchPrograms();
+
+    // ✅ Start silent event scheduler (runs while this screen is open)
+    _startEventScheduleEnforcer();
 
     _nameController.addListener(() {
       final upper = _nameController.text.toUpperCase();
@@ -79,6 +100,7 @@ class _OperatorScannerState extends State<OperatorScanner>
 
   @override
   void dispose() {
+    _eventScheduleTimer?.cancel();
     _controller.dispose();
     _nameController.dispose();
     _studentIDController.dispose();
@@ -166,6 +188,91 @@ class _OperatorScannerState extends State<OperatorScanner>
         _department = '';
         _program = '';
       });
+    }
+  }
+
+  // ---------- Background Event Schedule Enforcer ----------
+
+  DateTime? _readOptionalDateTime(dynamic v) {
+    if (v == null) return null;
+    if (v is Timestamp) return v.toDate();
+    return null;
+  }
+
+  bool? _computeShouldBeEnabled({
+    required DateTime now,
+    required DateTime? startAt,
+    required DateTime? endAt,
+  }) {
+    // no schedule -> do not touch (manual only)
+    if (startAt == null && endAt == null) return null;
+
+    // before start -> inactive
+    if (startAt != null && now.isBefore(startAt)) return false;
+
+    // at/after cutoff -> inactive
+    if (endAt != null && !now.isBefore(endAt)) return false;
+
+    // otherwise within window / open-ended -> active
+    return true;
+  }
+
+  void _startEventScheduleEnforcer() {
+    // Run once quickly after screen shows
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _syncEventSchedulesSilently();
+    });
+
+    // Then keep checking periodically (silent)
+    _eventScheduleTimer?.cancel();
+    _eventScheduleTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      _syncEventSchedulesSilently();
+    });
+  }
+
+  Future<void> _syncEventSchedulesSilently() async {
+    if (_scheduleSyncInFlight) return;
+    _scheduleSyncInFlight = true;
+
+    try {
+      final now = DateTime.now();
+
+      // Fetch all events (so inactive scheduled events can be turned on)
+      final snap = await FirebaseFirestore.instance.collection('events').get();
+
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        final currentEnabled = (data['isEnabled'] == true);
+
+        final startAt = _readOptionalDateTime(data['startAt']);
+        final endAt = _readOptionalDateTime(data['endAt']);
+
+        final shouldEnable = _computeShouldBeEnabled(
+          now: now,
+          startAt: startAt,
+          endAt: endAt,
+        );
+
+        if (shouldEnable == null) continue; // manual-only event
+        if (shouldEnable == currentEnabled) continue;
+
+        if (_autoBusy.contains(doc.id)) continue;
+        _autoBusy.add(doc.id);
+        try {
+          await FirebaseFirestore.instance
+              .collection('events')
+              .doc(doc.id)
+              .update({'isEnabled': shouldEnable});
+        } catch (_) {
+          // silent fail (permission/network) — do not show UI
+        } finally {
+          _autoBusy.remove(doc.id);
+        }
+      }
+    } catch (_) {
+      // silent fail
+    } finally {
+      _scheduleSyncInFlight = false;
     }
   }
 
@@ -576,11 +683,7 @@ class _OperatorScannerState extends State<OperatorScanner>
         'CCIS',
         'CSP',
       ].map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
-      onChanged: enabled
-          ? (v) {
-              setState(() => _department = v ?? '');
-            }
-          : null,
+      onChanged: enabled ? (v) => setState(() => _department = v ?? '') : null,
       decoration: InputDecoration(
         labelText: 'Department',
         floatingLabelBehavior: FloatingLabelBehavior.always,
@@ -635,11 +738,7 @@ class _OperatorScannerState extends State<OperatorScanner>
     return DropdownButtonFormField<String>(
       initialValue: _program.isEmpty ? null : _program,
       items: items,
-      onChanged: enabled
-          ? (v) {
-              setState(() => _program = v ?? '');
-            }
-          : null,
+      onChanged: enabled ? (v) => setState(() => _program = v ?? '') : null,
       decoration: InputDecoration(
         labelText: 'Program',
         floatingLabelBehavior: FloatingLabelBehavior.always,
@@ -697,13 +796,6 @@ class _OperatorScannerState extends State<OperatorScanner>
           : (val) {
               setState(() {
                 _selectedEventId = val;
-                if (val == null) {
-                } else {
-                  final match = activeEvents.firstWhere((d) => d.id == val);
-                  final data = match.data() as Map<String, dynamic>;
-                  (data['eventName'] ?? '').toString();
-                  (data['label'] ?? '').toString();
-                }
               });
             },
       decoration: InputDecoration(
@@ -777,7 +869,6 @@ class _OperatorScannerState extends State<OperatorScanner>
               );
             }
 
-            // If events exist, ensure scanner can run as normal
             final bool confirmEnabled =
                 (_selectedEventId != null &&
                 _studentID != null &&
@@ -815,9 +906,8 @@ class _OperatorScannerState extends State<OperatorScanner>
                           ),
                           const SizedBox(height: 10),
 
-                          // Event dropdown (replaces the old event title)
+                          // Event dropdown
                           _buildEventDropdown(activeEvents),
-
                           const SizedBox(height: 12),
 
                           _buildAnimatedScanner(),

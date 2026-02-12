@@ -1,11 +1,11 @@
 // lib/screens/operator/home_tabs/students_tab.dart
 //
 // Students tab (updated):
+// - Number of Registered Students dashboard above the list (counts filtered list)
 // - No SnackBars (uses ActionFeedbackOverlay)
 // - Delete asks confirmation FIRST, then asks remarks (required), then deletes + logs to deleteLog
-// - ADD STUDENT opens AddStudentScreen
-// - EDIT STUDENT opens AddStudentScreen in edit mode
-// - Shows clear, actionable feedback indicating action + data affected
+// - ADD STUDENT opens AddStudentScreen (Manual + XLSX Import)
+// - Handles XLSX import result summary and shows success overlay
 
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -162,11 +162,9 @@ class _StudentsTabState extends State<StudentsTab> {
     String studentId,
     String name,
   ) async {
-    // Step 1: confirmation first
     final confirmed = await _confirmDeleteDialog(studentId, name);
     if (!confirmed) return;
 
-    // Step 2: ask remarks
     final remarks = await _askRemarksDialog();
     if (remarks == null || remarks.isEmpty) return;
 
@@ -212,6 +210,7 @@ class _StudentsTabState extends State<StudentsTab> {
 
     if (result == null) return;
 
+    // Manual add feedback
     if (result['saved'] == true && result['mode'] == 'add') {
       final id = (result['id'] ?? '').toString();
       final name = (result['name'] ?? '').toString();
@@ -227,6 +226,33 @@ class _StudentsTabState extends State<StudentsTab> {
           if (name.isNotEmpty) 'Name: $name',
           if (dept.isNotEmpty) 'Department: $dept',
           if (prog.isNotEmpty) 'Program: $prog',
+        ],
+      );
+      return;
+    }
+
+    // XLSX import feedback
+    if (result['imported'] == true && result['mode'] == 'xlsx') {
+      final file = (result['file'] ?? '').toString();
+      final total = (result['total'] ?? 0) as int;
+      final added = (result['added'] ?? 0) as int;
+      final skipped = (result['skipped'] ?? 0) as int;
+
+      final rawErrors = result['errors'];
+      final errors = (rawErrors is List)
+          ? rawErrors.map((e) => e.toString()).toList()
+          : <String>[];
+
+      await _feedbackSuccess(
+        'Import complete',
+        'Students were imported successfully.',
+        affected: [
+          if (file.isNotEmpty) 'File: $file',
+          'Total in list: $total',
+          'Added: $added',
+          'Skipped: $skipped',
+          if (errors.isNotEmpty) 'Errors (sample): ${errors.length}',
+          ...errors.map((e) => '• $e'),
         ],
       );
     }
@@ -292,6 +318,59 @@ class _StudentsTabState extends State<StudentsTab> {
     );
   }
 
+  Widget _countDashboard(int count) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.black12),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0F000000),
+            blurRadius: 10,
+            offset: Offset(0, 4),
+          ),
+        ],
+        color: Colors.white,
+      ),
+      child: Row(
+        children: [
+          Container(
+            height: 44,
+            width: 44,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              color: Colors.grey.shade100,
+            ),
+            child: const Icon(Icons.people_alt_outlined, color: Colors.black87),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Number of Registered Students',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black54,
+                  ),
+                ),
+                SizedBox(height: 4),
+              ],
+            ),
+          ),
+          Text(
+            '$count',
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final q = _studentSearchController.text.trim().toLowerCase();
@@ -354,83 +433,102 @@ class _StudentsTabState extends State<StudentsTab> {
                   return name.contains(q) || id.contains(q);
                 }).toList();
 
-                if (filtered.isEmpty) {
-                  return Center(
-                    child: Text(
-                      q.isEmpty ? 'No students found.' : 'No results for "$q".',
-                    ),
-                  );
-                }
+                return Column(
+                  children: [
+                    _countDashboard(filtered.length),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: filtered.isEmpty
+                          ? Center(
+                              child: Text(
+                                q.isEmpty
+                                    ? 'No students found.'
+                                    : 'No results for "$q".',
+                              ),
+                            )
+                          : ListView.builder(
+                              itemCount: filtered.length,
+                              itemBuilder: (context, i) {
+                                final doc = filtered[i];
+                                final data =
+                                    (doc.data() as Map<String, dynamic>);
 
-                return ListView.builder(
-                  itemCount: filtered.length,
-                  itemBuilder: (context, i) {
-                    final doc = filtered[i];
-                    final data = (doc.data() as Map<String, dynamic>);
+                                final idNumber = (data['idNumber'] ?? doc.id)
+                                    .toString();
+                                final studentName =
+                                    (data['studentName'] ?? 'UNKNOWN')
+                                        .toString();
+                                final department = (data['department'] ?? '—')
+                                    .toString();
+                                final program = (data['program'] ?? '—')
+                                    .toString();
 
-                    final idNumber = (data['idNumber'] ?? doc.id).toString();
-                    final studentName = (data['studentName'] ?? 'UNKNOWN')
-                        .toString();
-                    final department = (data['department'] ?? '—').toString();
-                    final program = (data['program'] ?? '—').toString();
-
-                    return Card(
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      margin: const EdgeInsets.symmetric(vertical: 4),
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    'ID: $idNumber',
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.black54,
+                                return Card(
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  margin: const EdgeInsets.symmetric(
+                                    vertical: 4,
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(12),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                'ID: $idNumber',
+                                                style: const TextStyle(
+                                                  fontSize: 12,
+                                                  color: Colors.black54,
+                                                ),
+                                              ),
+                                            ),
+                                            _tinyIconButton(
+                                              icon: Icons.edit,
+                                              color: Colors.blueGrey,
+                                              tooltip: 'Edit',
+                                              onPressed: () => _openEditStudent(
+                                                doc.id,
+                                                data,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            _tinyIconButton(
+                                              icon: Icons.delete,
+                                              color: Colors.red,
+                                              tooltip: 'Delete',
+                                              onPressed: () =>
+                                                  _deleteStudentDoc(
+                                                    doc.id,
+                                                    idNumber,
+                                                    studentName,
+                                                  ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          studentName,
+                                          style: const TextStyle(
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Text('Department: $department'),
+                                        Text('Program: $program'),
+                                      ],
                                     ),
                                   ),
-                                ),
-                                _tinyIconButton(
-                                  icon: Icons.edit,
-                                  color: Colors.blueGrey,
-                                  tooltip: 'Edit',
-                                  onPressed: () =>
-                                      _openEditStudent(doc.id, data),
-                                ),
-                                const SizedBox(width: 8),
-                                _tinyIconButton(
-                                  icon: Icons.delete,
-                                  color: Colors.red,
-                                  tooltip: 'Delete',
-                                  onPressed: () => _deleteStudentDoc(
-                                    doc.id,
-                                    idNumber,
-                                    studentName,
-                                  ),
-                                ),
-                              ],
+                                );
+                              },
                             ),
-                            const SizedBox(height: 6),
-                            Text(
-                              studentName,
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text('Department: $department'),
-                            Text('Program: $program'),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
+                    ),
+                  ],
                 );
               },
             ),

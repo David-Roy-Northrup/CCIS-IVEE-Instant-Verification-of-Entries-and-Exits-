@@ -1,3 +1,25 @@
+// lib/screens/administrator/home_tabs/events_tab.dart
+//
+// ✅ Change requested:
+// When opening / accessing this page, immediately check each event's schedule bounds,
+// and if it is currently within the active window but not active, set it to ACTIVE automatically.
+// Also keeps the periodic (per-second) scheduler so it continues to flip on/off as time passes.
+//
+// Rules implemented:
+// - If startAt exists and now < startAt -> should be INACTIVE
+// - If endAt exists and now >= endAt  -> should be INACTIVE
+// - Otherwise (within bounds or bounds are open-ended) -> should be ACTIVE
+//   - If only endAt exists and now < endAt -> ACTIVE
+//   - If only startAt exists and now >= startAt -> ACTIVE
+// - If no schedule fields at all -> do nothing (manual toggle only)
+//
+// We also:
+// - run a "one-time" schedule sync on first snapshot / first build
+// - avoid spamming updates using _autoBusy set
+// - continue showing timer labels ("Active in ..." / "Inactive in ...")
+
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
@@ -15,14 +37,26 @@ class _EventsTabState extends State<EventsTab> {
   final _eventSearchController = TextEditingController();
   bool _resetBusy = false;
 
+  Timer? _uiTick; // refresh countdown + scheduler
+  final Set<String> _autoBusy = <String>{}; // prevent spam updates
+
+  bool _initialScheduleSynced =
+      false; // ✅ run schedule check once when page is accessed
+
   @override
   void initState() {
     super.initState();
     _eventSearchController.addListener(() => setState(() {}));
+
+    // Tick UI every second so timers update live + apply schedule continuously
+    _uiTick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    _uiTick?.cancel();
     _eventSearchController.dispose();
     super.dispose();
   }
@@ -81,9 +115,7 @@ class _EventsTabState extends State<EventsTab> {
           ops = 0;
         }
       }
-      if (ops > 0) {
-        await batch.commit();
-      }
+      if (ops > 0) await batch.commit();
     } catch (e) {
       await _feedbackError(
         'Reset failed',
@@ -190,6 +222,142 @@ class _EventsTabState extends State<EventsTab> {
     );
   }
 
+  DateTime? _readOptionalDateTime(dynamic v) {
+    if (v == null) return null;
+    if (v is Timestamp) return v.toDate();
+    return null;
+  }
+
+  String _formatDuration(Duration d) {
+    if (d.isNegative) return '0s';
+
+    final totalSeconds = d.inSeconds;
+    final days = totalSeconds ~/ 86400;
+    final hours = (totalSeconds % 86400) ~/ 3600;
+    final minutes = (totalSeconds % 3600) ~/ 60;
+    final seconds = totalSeconds % 60;
+
+    String two(int n) => n.toString().padLeft(2, '0');
+
+    if (days > 0) return '${days}d ${two(hours)}h ${two(minutes)}m';
+    if (hours > 0) return '${two(hours)}h ${two(minutes)}m ${two(seconds)}s';
+    if (minutes > 0) return '${two(minutes)}m ${two(seconds)}s';
+    return '${seconds}s';
+  }
+
+  bool _hasAnySchedule(DateTime? startAt, DateTime? endAt) =>
+      startAt != null || endAt != null;
+
+  /// Computes whether event SHOULD be enabled based on bounds.
+  /// Returns null if there is no schedule at all.
+  bool? _computeShouldBeEnabled({
+    required DateTime now,
+    required DateTime? startAt,
+    required DateTime? endAt,
+  }) {
+    if (!_hasAnySchedule(startAt, endAt)) return null;
+
+    // Before start -> inactive
+    if (startAt != null && now.isBefore(startAt)) return false;
+
+    // At/after cutoff -> inactive
+    if (endAt != null && !now.isBefore(endAt)) return false;
+
+    // Otherwise within window / open-ended -> active
+    return true;
+  }
+
+  // ✅ Auto-update isEnabled to match schedule
+  Future<void> _applyScheduleIfNeeded({
+    required String docId,
+    required bool currentEnabled,
+    required DateTime now,
+    required DateTime? startAt,
+    required DateTime? endAt,
+  }) async {
+    final shouldBeEnabled = _computeShouldBeEnabled(
+      now: now,
+      startAt: startAt,
+      endAt: endAt,
+    );
+
+    if (shouldBeEnabled == null) return; // no schedule -> manual only
+    if (shouldBeEnabled == currentEnabled) return;
+    if (_autoBusy.contains(docId)) return;
+
+    _autoBusy.add(docId);
+    try {
+      await FirebaseFirestore.instance.collection('events').doc(docId).update({
+        'isEnabled': shouldBeEnabled,
+      });
+    } catch (_) {
+      // silent (avoid spamming dialogs)
+    } finally {
+      _autoBusy.remove(docId);
+    }
+  }
+
+  // ✅ One-time sync when opening page (first snapshot)
+  Future<void> _syncAllEventsOnce(List<QueryDocumentSnapshot> docs) async {
+    if (_initialScheduleSynced) return;
+    _initialScheduleSynced = true;
+
+    final now = DateTime.now();
+    for (final d in docs) {
+      final m = (d.data() as Map<String, dynamic>);
+      final enabled = (m['isEnabled'] == true);
+
+      final startAt = _readOptionalDateTime(m['startAt']);
+      final endAt = _readOptionalDateTime(m['endAt']);
+
+      final shouldBeEnabled = _computeShouldBeEnabled(
+        now: now,
+        startAt: startAt,
+        endAt: endAt,
+      );
+
+      // "If within the time bound and not active, set active automatically"
+      if (shouldBeEnabled == true && enabled == false) {
+        await _applyScheduleIfNeeded(
+          docId: d.id,
+          currentEnabled: enabled,
+          now: now,
+          startAt: startAt,
+          endAt: endAt,
+        );
+      }
+
+      // (Optional but consistent): if already past cutoff but still active, flip off
+      if (shouldBeEnabled == false && enabled == true) {
+        await _applyScheduleIfNeeded(
+          docId: d.id,
+          currentEnabled: enabled,
+          now: now,
+          startAt: startAt,
+          endAt: endAt,
+        );
+      }
+    }
+  }
+
+  String? _timerLineForEvent({
+    required DateTime now,
+    required DateTime? startAt,
+    required DateTime? endAt,
+  }) {
+    // If start is in the future => countdown until active
+    if (startAt != null && now.isBefore(startAt)) {
+      return 'Active in ${_formatDuration(startAt.difference(now))}';
+    }
+
+    // Otherwise, if cutoff is in the future => countdown until inactive
+    if (endAt != null && now.isBefore(endAt)) {
+      return 'Inactive in ${_formatDuration(endAt.difference(now))}';
+    }
+
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     return _whitePane(
@@ -233,7 +401,6 @@ class _EventsTabState extends State<EventsTab> {
                       context,
                       MaterialPageRoute(builder: (_) => const AddEventScreen()),
                     );
-                    // ✅ No action_feedback on success (per your request)
                   } catch (e) {
                     await _feedbackError(
                       'Add failed',
@@ -259,8 +426,13 @@ class _EventsTabState extends State<EventsTab> {
                   return const Center(child: CircularProgressIndicator());
                 }
 
+                final now = DateTime.now();
                 final q = _eventSearchController.text.trim().toLowerCase();
                 final docs = snapshot.data!.docs.toList();
+
+                // ✅ One-time schedule check when page is accessed / first loads
+                // ignore: discarded_futures
+                _syncAllEventsOnce(docs);
 
                 docs.sort((a, b) {
                   final am = (a.data() as Map<String, dynamic>);
@@ -299,8 +471,26 @@ class _EventsTabState extends State<EventsTab> {
                     final name = (data['eventName'] ?? '').toString();
                     final label = (data['label'] ?? '').toString();
                     final enabled = (data['isEnabled'] == true);
-
                     final display = label.isEmpty ? name : "$name - $label";
+
+                    final startAt = _readOptionalDateTime(data['startAt']);
+                    final endAt = _readOptionalDateTime(data['endAt']);
+
+                    // ✅ Continuous auto-apply (keeps on/off correct as time passes)
+                    // ignore: discarded_futures
+                    _applyScheduleIfNeeded(
+                      docId: doc.id,
+                      currentEnabled: enabled,
+                      now: now,
+                      startAt: startAt,
+                      endAt: endAt,
+                    );
+
+                    final timerLine = _timerLineForEvent(
+                      now: now,
+                      startAt: startAt,
+                      endAt: endAt,
+                    );
 
                     return Card(
                       shape: RoundedRectangleBorder(
@@ -312,12 +502,28 @@ class _EventsTabState extends State<EventsTab> {
                         child: Row(
                           children: [
                             Expanded(
-                              child: Text(
-                                display,
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    display,
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  if (timerLine != null) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      timerLine,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700,
+                                        color: Colors.black54,
+                                      ),
+                                    ),
+                                  ],
+                                ],
                               ),
                             ),
                             _statusButton(

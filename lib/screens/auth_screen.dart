@@ -409,28 +409,6 @@ class _AuthScreenState extends State<AuthScreen> {
                                     ),
                                   ),
                                 ),
-
-                                // ✅ Added small footer text
-                                const SizedBox(height: 10),
-                                const Text(
-                                  'Developed by David Roy A. Northrup',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: Colors.black54,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                const Text(
-                                  '© CJC CCIS 2025',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: Colors.black54,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
                               ],
                             ),
                           ),

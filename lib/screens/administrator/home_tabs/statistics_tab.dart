@@ -1,3 +1,5 @@
+// lib/screens/administrator/home_tabs/statistics_tab.dart
+
 import 'dart:async';
 import 'dart:io';
 
@@ -201,9 +203,26 @@ class _StatisticsTabState extends State<StatisticsTab> {
     }
   }
 
-  // -------------------- Excel helpers --------------------
-  List<xls.TextCellValue> _rowToCells(List<String> row) =>
-      row.map((v) => xls.TextCellValue(v)).toList();
+  // -------------------- Excel helpers (MATCH TEMPLATE) --------------------
+  xls.CellIndex _ci(int col, int row) =>
+      xls.CellIndex.indexByColumnRow(columnIndex: col, rowIndex: row);
+
+  void _setText(
+    xls.Sheet sheet,
+    int col,
+    int row,
+    String text, {
+    xls.CellStyle? style,
+  }) {
+    final cell = sheet.cell(_ci(col, row));
+    cell.value = xls.TextCellValue(text);
+    if (style != null) cell.cellStyle = style;
+  }
+
+  void _setStyle(xls.Sheet sheet, int col, int row, xls.CellStyle style) {
+    final cell = sheet.cell(_ci(col, row));
+    cell.cellStyle = style;
+  }
 
   Future<File> _writeWorkbookToTemp(xls.Excel excel) async {
     final safeDate = DateFormat('yyyy-MM-dd').format(DateTime.now());
@@ -397,6 +416,337 @@ class _StatisticsTabState extends State<StatisticsTab> {
     }
   }
 
+  // -------------------- Build XLSX to match your uploaded template --------------------
+  void _buildAttendanceSheet({
+    required xls.Sheet sheet,
+    required List<String> eventsRaw,
+    required List<Map<String, String>> students,
+    required Map<String, Set<String>> eventsByStudent,
+  }) {
+    // Template expects an EVENTS group even if empty.
+    final events = eventsRaw.isEmpty ? <String>['(No events)'] : eventsRaw;
+
+    // Columns: A-D fixed, E.. dynamic for events
+    const int colDept = 0; // A
+    const int colProg = 1; // B
+    const int colId = 2; // C
+    const int colName = 3; // D
+    const int firstEventCol = 4; // E
+    final int lastEventCol = firstEventCol + events.length - 1;
+
+    final blue = xls.ExcelColor.fromHexString('FF0B5394');
+    final white = xls.ExcelColor.fromHexString('FFFFFFFF');
+    final black = xls.ExcelColor.fromHexString('FF000000');
+
+    xls.Border b(xls.BorderStyle s, xls.ExcelColor c) =>
+        xls.Border(borderStyle: s, borderColorHex: c);
+
+    final thinWhite = b(xls.BorderStyle.Thin, white);
+    final mediumBlack = b(xls.BorderStyle.Medium, black);
+    final mediumWhite = b(xls.BorderStyle.Medium, white);
+
+    // Header base (blue, white text)
+    xls.CellStyle headerCell({
+      xls.Border? left,
+      xls.Border? right,
+      xls.Border? top,
+      xls.Border? bottom,
+    }) {
+      return xls.CellStyle(
+        backgroundColorHex: blue,
+        fontColorHex: white,
+        bold: true,
+        horizontalAlign: xls.HorizontalAlign.Center,
+        verticalAlign: xls.VerticalAlign.Center,
+        textWrapping: xls.TextWrapping.WrapText,
+        leftBorder: left,
+        rightBorder: right,
+        topBorder: top,
+        bottomBorder: bottom,
+      );
+    }
+
+    // Body styles
+    final bodyCenter = xls.CellStyle(
+      horizontalAlign: xls.HorizontalAlign.Center,
+      verticalAlign: xls.VerticalAlign.Center,
+    );
+    final bodyText = xls.CellStyle(verticalAlign: xls.VerticalAlign.Center);
+
+    xls.CellStyle withTop(xls.CellStyle base) =>
+        base.copyWith(topBorderVal: mediumBlack);
+
+    xls.CellStyle withRight(xls.CellStyle base, xls.Border right) =>
+        base.copyWith(rightBorderVal: right);
+
+    xls.CellStyle withTopRight(xls.CellStyle base, xls.Border right) =>
+        base.copyWith(topBorderVal: mediumBlack, rightBorderVal: right);
+
+    // Column widths (from your uploaded file)
+    sheet.setColumnWidth(colDept, 13); // A
+    sheet.setColumnWidth(colProg, 7.88); // B
+    sheet.setColumnWidth(colId, 10.5); // C
+    sheet.setColumnWidth(colName, 34.5); // D
+    for (int c = firstEventCol; c <= lastEventCol; c++) {
+      sheet.setColumnWidth(c, 13); // E.. end
+    }
+
+    // Merges (template)
+    sheet.merge(_ci(colDept, 0), _ci(colDept, 1));
+    sheet.merge(_ci(colProg, 0), _ci(colProg, 1));
+    sheet.merge(_ci(colId, 0), _ci(colId, 1));
+    sheet.merge(_ci(colName, 0), _ci(colName, 1));
+    sheet.merge(_ci(firstEventCol, 0), _ci(lastEventCol, 0));
+
+    // Row 1 labels
+    _setText(sheet, colDept, 0, 'Department');
+    _setText(sheet, colProg, 0, 'Program');
+    _setText(sheet, colId, 0, 'Student ID');
+    _setText(sheet, colName, 0, 'Student Name');
+    _setText(sheet, firstEventCol, 0, 'EVENTS');
+
+    // Style header rows (row 0 and 1)
+    for (int c = colDept; c <= lastEventCol; c++) {
+      // Top border medium black for first header row
+      final isLast = c == lastEventCol;
+      final isNameCol = c == colName;
+
+      final right = isLast
+          ? mediumBlack
+          : (isNameCol ? mediumWhite : thinWhite); // divider after name
+
+      // Row 0 (top header)
+      _setStyle(
+        sheet,
+        c,
+        0,
+        headerCell(
+          left: thinWhite,
+          right: right,
+          top: mediumBlack,
+          bottom: thinWhite,
+        ),
+      );
+
+      // Row 1 (second header row):
+      // A-D are merged (blank cells) but still styled; Events row shows event names.
+      final bottom = thinWhite;
+      final top = thinWhite;
+
+      _setStyle(
+        sheet,
+        c,
+        1,
+        headerCell(left: thinWhite, right: right, top: top, bottom: bottom),
+      );
+    }
+
+    // Row 2 (event names in E..end)
+    for (int i = 0; i < events.length; i++) {
+      final c = firstEventCol + i;
+      _setText(sheet, c, 1, events[i]);
+    }
+
+    // Data starts at row index 2 (Excel row 3)
+    for (int r = 0; r < students.length; r++) {
+      final row = 2 + r;
+      final s = students[r];
+
+      final dept = (s['department'] ?? '');
+      final prog = (s['program'] ?? '');
+      final id = (s['idNumber'] ?? '');
+      final name = (s['studentName'] ?? '');
+
+      final set = eventsByStudent[id] ?? <String>{};
+
+      // Top medium black only on first data row (matches your template separator)
+      final bool firstDataRow = row == 2;
+
+      _setText(
+        sheet,
+        colDept,
+        row,
+        dept,
+        style: firstDataRow ? withTop(bodyCenter) : bodyCenter,
+      );
+      _setText(
+        sheet,
+        colProg,
+        row,
+        prog,
+        style: firstDataRow ? withTop(bodyCenter) : bodyCenter,
+      );
+      _setText(
+        sheet,
+        colId,
+        row,
+        id,
+        style: firstDataRow ? withTop(bodyCenter) : bodyCenter,
+      );
+
+      // Name column: right border medium black (divider)
+      final nameStyle = firstDataRow
+          ? withTopRight(bodyText, mediumBlack)
+          : withRight(bodyText, mediumBlack);
+
+      _setText(sheet, colName, row, name, style: nameStyle);
+
+      for (int i = 0; i < events.length; i++) {
+        final ev = events[i];
+        final c = firstEventCol + i;
+
+        final isLast = c == lastEventCol;
+        final mark = set.contains(ev) ? '✔' : '';
+
+        final base = firstDataRow ? withTop(bodyCenter) : bodyCenter;
+        final styled = isLast
+            ? (firstDataRow
+                  ? withTopRight(bodyCenter, mediumBlack)
+                  : withRight(bodyCenter, mediumBlack))
+            : base;
+
+        _setText(sheet, c, row, mark, style: styled);
+      }
+    }
+
+    // If there are no students, still draw the divider under headers by setting row 2 top border
+    if (students.isEmpty) {
+      for (int c = colDept; c <= lastEventCol; c++) {
+        final isLast = c == lastEventCol;
+        final isName = c == colName;
+
+        final right = isLast || isName
+            ? mediumBlack
+            : null; // keep divider/right edge
+        final style = xls.CellStyle(
+          topBorder: mediumBlack,
+          rightBorder: right,
+          verticalAlign: xls.VerticalAlign.Center,
+        );
+
+        _setStyle(sheet, c, 2, style);
+      }
+    }
+  }
+
+  void _buildDeleteLogSheet({
+    required xls.Sheet sheet,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> deleteDocs,
+  }) {
+    final blue = xls.ExcelColor.fromHexString('FF0B5394');
+    final white = xls.ExcelColor.fromHexString('FFFFFFFF');
+    final black = xls.ExcelColor.fromHexString('FF000000');
+
+    xls.Border b(xls.BorderStyle s, xls.ExcelColor c) =>
+        xls.Border(borderStyle: s, borderColorHex: c);
+
+    final thinWhite = b(xls.BorderStyle.Thin, white);
+    final mediumBlack = b(xls.BorderStyle.Medium, black);
+
+    // Column widths (from your uploaded file)
+    sheet.setColumnWidth(0, 12.5); // Date
+    sheet.setColumnWidth(1, 10.5); // Time
+    sheet.setColumnWidth(2, 23); // Operator
+    sheet.setColumnWidth(3, 12.5); // Type
+    sheet.setColumnWidth(4, 14.5); // Student ID
+    sheet.setColumnWidth(5, 59.5); // Remarks
+
+    xls.CellStyle headerCell({required bool isFirst, required bool isLast}) {
+      return xls.CellStyle(
+        backgroundColorHex: blue,
+        fontColorHex: white,
+        bold: true,
+        horizontalAlign: xls.HorizontalAlign.Center,
+        verticalAlign: xls.VerticalAlign.Center,
+        textWrapping: xls.TextWrapping.WrapText,
+        topBorder: mediumBlack,
+        bottomBorder: mediumBlack,
+        leftBorder: isFirst ? mediumBlack : thinWhite,
+        rightBorder: isLast ? mediumBlack : thinWhite,
+      );
+    }
+
+    final bodyBase = xls.CellStyle(
+      verticalAlign: xls.VerticalAlign.Center,
+      textWrapping: xls.TextWrapping.WrapText,
+    );
+
+    xls.CellStyle bodyCell({
+      required bool isFirst,
+      required bool isLast,
+      bool bottom = false,
+    }) {
+      return bodyBase.copyWith(
+        leftBorderVal: isFirst ? mediumBlack : null,
+        rightBorderVal: isLast ? mediumBlack : null,
+        bottomBorderVal: bottom ? mediumBlack : null,
+      );
+    }
+
+    // Header
+    final headers = [
+      'Date',
+      'Time',
+      'Operator',
+      'Type',
+      'Student ID',
+      'Remarks',
+    ];
+    for (int c = 0; c < headers.length; c++) {
+      _setText(
+        sheet,
+        c,
+        0,
+        headers[c],
+        style: headerCell(isFirst: c == 0, isLast: c == headers.length - 1),
+      );
+    }
+
+    // Data rows
+    final startRow = 1;
+    for (int i = 0; i < deleteDocs.length; i++) {
+      final r = startRow + i;
+      final m = deleteDocs[i].data();
+
+      final rowVals = <String>[
+        (m['date'] ?? '').toString(),
+        (m['time'] ?? '').toString(),
+        (m['operator'] ?? '').toString(),
+        (m['type'] ?? '').toString(),
+        (m['studentID'] ?? '').toString(),
+        (m['remarks'] ?? '').toString(),
+      ];
+
+      final isLastDataRow = (i == deleteDocs.length - 1);
+
+      for (int c = 0; c < rowVals.length; c++) {
+        _setText(
+          sheet,
+          c,
+          r,
+          rowVals[c],
+          style: bodyCell(
+            isFirst: c == 0,
+            isLast: c == rowVals.length - 1,
+            bottom: isLastDataRow,
+          ),
+        );
+      }
+    }
+
+    // If no data rows, bottom border should still exist right under header (matches template feel)
+    if (deleteDocs.isEmpty) {
+      for (int c = 0; c < headers.length; c++) {
+        final style = xls.CellStyle(
+          leftBorder: c == 0 ? mediumBlack : null,
+          rightBorder: c == headers.length - 1 ? mediumBlack : null,
+          bottomBorder: mediumBlack,
+        );
+        _setStyle(sheet, c, 1, style);
+      }
+    }
+  }
+
   // -------------------- Send Data (Excel with 2 sheets) --------------------
   Future<void> _sendDataAsCsv() async {
     // (kept name so you don't have to refactor callers)
@@ -415,79 +765,27 @@ class _StatisticsTabState extends State<StatisticsTab> {
       final deleteSnap = await FirebaseFirestore.instance
           .collection('deleteLog')
           .get();
-
       final deleteDocs = deleteSnap.docs.toList();
 
       // Build workbook
       final xls.Excel excel = xls.Excel.createExcel();
 
-      // Rename default Sheet1 -> Attendance Log (so you only end with 2 sheets total)
+      // Rename default Sheet1 -> Attendance Log
       if (excel.sheets.keys.contains('Sheet1')) {
         excel.rename('Sheet1', 'Attendance Log');
       }
       excel.setDefaultSheet('Attendance Log');
 
-      final xls.Sheet attendanceSheet = excel['Attendance Log'];
-
-      // Sheet 1: Attendance Log (same matrix you already generate)
-      final events = List<String>.from(_events);
-
-      attendanceSheet.appendRow(
-        _rowToCells([
-          'Department',
-          'Program',
-          'Student ID',
-          'Student Name',
-          ...events,
-        ]),
+      final attendanceSheet = excel['Attendance Log'];
+      _buildAttendanceSheet(
+        sheet: attendanceSheet,
+        eventsRaw: List<String>.from(_events),
+        students: List<Map<String, String>>.from(_students),
+        eventsByStudent: _eventsByStudent,
       );
 
-      for (final s in _students) {
-        final dept = (s['department'] ?? '');
-        final prog = (s['program'] ?? '');
-        final id = (s['idNumber'] ?? '');
-        final name = (s['studentName'] ?? '');
-
-        final set = _eventsByStudent[id] ?? <String>{};
-
-        attendanceSheet.appendRow(
-          _rowToCells([
-            dept,
-            prog,
-            id,
-            name,
-            ...events.map((ev) => set.contains(ev) ? '✔' : ''),
-          ]),
-        );
-      }
-
-      // Sheet 2: Delete Log
-      final xls.Sheet deleteSheet = excel['Delete Log'];
-
-      deleteSheet.appendRow(
-        _rowToCells([
-          'Date',
-          'Time',
-          'Operator',
-          'Type',
-          'Student ID',
-          'Remarks',
-        ]),
-      );
-
-      for (final d in deleteDocs) {
-        final m = d.data();
-        deleteSheet.appendRow(
-          _rowToCells([
-            (m['date'] ?? '').toString(),
-            (m['time'] ?? '').toString(),
-            (m['operator'] ?? '').toString(),
-            (m['type'] ?? '').toString(),
-            (m['studentID'] ?? '').toString(),
-            (m['remarks'] ?? '').toString(),
-          ]),
-        );
-      }
+      final deleteSheet = excel['Delete Log'];
+      _buildDeleteLogSheet(sheet: deleteSheet, deleteDocs: deleteDocs);
 
       final file = await _writeWorkbookToTemp(excel);
 
@@ -611,7 +909,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 10),
-
           if (_loadingStats)
             _loadingDashboard()
           else
@@ -706,9 +1003,7 @@ class _StatisticsTabState extends State<StatisticsTab> {
                 ],
               ),
             ),
-
           const SizedBox(height: 12),
-
           Row(
             children: [
               Expanded(
@@ -731,7 +1026,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
               ),
             ],
           ),
-
           const SizedBox(height: 10),
           Row(
             children: [
@@ -755,7 +1049,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
               ),
             ],
           ),
-
           const SizedBox(height: 10),
           Row(
             children: [
@@ -779,7 +1072,6 @@ class _StatisticsTabState extends State<StatisticsTab> {
               ),
             ],
           ),
-
           const SizedBox(height: 10),
           Row(
             children: [

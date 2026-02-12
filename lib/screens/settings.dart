@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '/screens/auth_screen.dart';
@@ -15,9 +14,6 @@ class Settings extends StatefulWidget {
 
 class _SettingsState extends State<Settings> {
   final User? user = FirebaseAuth.instance.currentUser;
-
-  // IMPORTANT: match AuthScreen config
-  final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: ['email']);
 
   Future<void> _showErrorDialog(
     BuildContext context,
@@ -70,7 +66,7 @@ class _SettingsState extends State<Settings> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         title: const Text("Confirm Logout"),
         content: const Text(
-          "Are you sure you want to log out?\n\nYou will need to reselect your account at login.",
+          "Return to the login screen?\n\nYou may not need to reselect your account.",
         ),
         actions: [
           TextButton(
@@ -79,7 +75,7 @@ class _SettingsState extends State<Settings> {
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text("Log out"),
+            child: const Text("Continue"),
           ),
         ],
       ),
@@ -89,7 +85,7 @@ class _SettingsState extends State<Settings> {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => const LoadingScreen(message: "Logging out..."),
+          builder: (context) => const LoadingScreen(message: "Returning..."),
         ),
       );
 
@@ -97,25 +93,15 @@ class _SettingsState extends State<Settings> {
     }
   }
 
+  /// IMPORTANT: This does NOT sign out Firebase or Google.
+  /// It only redirects to the login screen and clears navigation history.
   Future<void> _logout(BuildContext context) async {
     try {
-      // 1) Firebase sign out
-      await FirebaseAuth.instance.signOut();
-
-      // 2) Google sign out (local) + disconnect (revokes + clears cached account)
-      // disconnect can throw if not currently connected; ignore safely
-      try {
-        await _googleSignIn.disconnect();
-      } catch (_) {}
-      try {
-        await _googleSignIn.signOut();
-      } catch (_) {}
-
-      // 3) Go back to AuthScreen and clear navigation stack
       if (!mounted) return;
+
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (context) => const AuthScreen()),
+        MaterialPageRoute(builder: (_) => const AuthScreen()),
         (route) => false,
       );
     } catch (_) {
@@ -125,8 +111,8 @@ class _SettingsState extends State<Settings> {
       }
       await _showErrorDialog(
         context,
-        "Logout Failed",
-        "An error occurred while trying to log out. Please try again.",
+        "Redirect Failed",
+        "An error occurred while returning to login. Please try again.",
       );
     }
   }

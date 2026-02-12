@@ -120,11 +120,11 @@ class _UserAccessTabState extends State<UserAccessTab> {
     return haystack.contains(q);
   }
 
-  // 1) Current user
-  // 2) Admin only
-  // 3) Admin & Operator
-  // 4) Operator only
-  // 5) No roles / others
+  // 0) Current user (always first)
+  // 1) Admin only
+  // 2) Admin & Operator
+  // 3) Operator only
+  // 4) No roles / others
   int _accessRank({
     required String email,
     required bool isAdmin,
@@ -136,6 +136,29 @@ class _UserAccessTabState extends State<UserAccessTab> {
     if (isAdmin && isOperator) return 2;
     if (!isAdmin && isOperator) return 3;
     return 4;
+  }
+
+  Widget _profileAvatar({
+    required String name,
+    required String? photoUrl,
+    required bool isMe,
+  }) {
+    return CircleAvatar(
+      radius: 18,
+      backgroundColor: Colors.grey.shade200,
+      backgroundImage: (photoUrl != null && photoUrl.trim().isNotEmpty)
+          ? NetworkImage(photoUrl)
+          : null,
+      child: (photoUrl == null || photoUrl.trim().isEmpty)
+          ? Text(
+              name.trim().isNotEmpty ? name.trim()[0].toUpperCase() : '?',
+              style: TextStyle(
+                fontWeight: FontWeight.w900,
+                color: isMe ? Colors.black : Colors.black87,
+              ),
+            )
+          : null,
+    );
   }
 
   @override
@@ -281,11 +304,17 @@ class _UserAccessTabState extends State<UserAccessTab> {
                   itemBuilder: (context, i) {
                     final doc = filtered[i];
                     final data = (doc.data() as Map<String, dynamic>);
+
                     final email = (data['email'] ?? doc.id).toString();
                     final nameRaw = (data['name'] ?? '').toString().trim();
                     final name = nameRaw.isEmpty
                         ? _deriveNameFromEmail(email)
                         : nameRaw;
+
+                    final photoUrl =
+                        (data['photoUrl'] ?? data['photoURL'] ?? '')
+                            .toString()
+                            .trim();
 
                     final isAdmin = data['administrator'] == true;
                     final isOperator = data['operator'] == true;
@@ -295,13 +324,6 @@ class _UserAccessTabState extends State<UserAccessTab> {
                         email.trim().toLowerCase() == _currentUserEmail;
 
                     final roles = <Widget>[
-                      if (isMe)
-                        _roleChip(
-                          'Your account',
-                          bg: Colors.purple.shade50,
-                          fg: Colors.purple.shade800,
-                          icon: Icons.verified_user,
-                        ),
                       if (isAdmin)
                         _roleChip(
                           'Administrator',
@@ -316,7 +338,7 @@ class _UserAccessTabState extends State<UserAccessTab> {
                           fg: Colors.green.shade800,
                           icon: Icons.qr_code_scanner,
                         ),
-                      if (!isAdmin && !isOperator && !isMe)
+                      if (!isAdmin && !isOperator)
                         _roleChip(
                           'No roles',
                           bg: Colors.red.shade50,
@@ -335,8 +357,13 @@ class _UserAccessTabState extends State<UserAccessTab> {
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Icon(Icons.person_outline, size: 22),
+                            _profileAvatar(
+                              name: name,
+                              photoUrl: photoUrl.isEmpty ? null : photoUrl,
+                              isMe: isMe,
+                            ),
                             const SizedBox(width: 10),
+
                             Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -368,48 +395,54 @@ class _UserAccessTabState extends State<UserAccessTab> {
                                 ],
                               ),
                             ),
-                            IconButton(
-                              tooltip: 'Edit',
-                              icon: const Icon(
-                                Icons.edit,
-                                color: Colors.black54,
-                              ),
-                              onPressed: () async {
-                                final result = await Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => EditUserAccessScreen(
-                                      email: email,
-                                      initialData: data,
-                                    ),
-                                  ),
-                                );
 
-                                if (result is Map) {
-                                  if (result['updated'] == true) {
-                                    final admin =
-                                        result['administrator'] == true;
-                                    final op = result['operator'] == true;
-                                    await _feedbackSuccess(
-                                      'User updated',
-                                      "$email's roles were updated successfully.",
-                                      affected: [
-                                        'Roles: ${[if (admin) 'Administrator', if (op) 'Operator', if (!admin && !op) 'None'].join(', ')}',
-                                      ],
-                                    );
-                                  } else if (result['deleted'] == true) {
-                                    await _feedbackSuccess(
-                                      'User removed',
-                                      '$email was deleted successfully.',
-                                    );
-                                  } else if (result['error'] != null) {
-                                    await _feedbackError(
-                                      'Action failed',
-                                      'Unable to complete request.',
-                                    );
-                                  }
-                                }
-                              },
+                            IconButton(
+                              tooltip: isMe
+                                  ? 'You cannot edit your own access'
+                                  : 'Edit',
+                              icon: Icon(
+                                Icons.edit,
+                                color: isMe ? Colors.black26 : Colors.black54,
+                              ),
+                              onPressed: isMe
+                                  ? null
+                                  : () async {
+                                      final result = await Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => EditUserAccessScreen(
+                                            email: email,
+                                            initialData: data,
+                                          ),
+                                        ),
+                                      );
+
+                                      if (result is Map) {
+                                        if (result['updated'] == true) {
+                                          final admin =
+                                              result['administrator'] == true;
+                                          final op = result['operator'] == true;
+
+                                          await _feedbackSuccess(
+                                            'User updated',
+                                            "$email's roles were updated successfully.",
+                                            affected: [
+                                              'Roles: ${[if (admin) 'Administrator', if (op) 'Operator', if (!admin && !op) 'None'].join(', ')}',
+                                            ],
+                                          );
+                                        } else if (result['deleted'] == true) {
+                                          await _feedbackSuccess(
+                                            'User removed',
+                                            '$email was deleted successfully.',
+                                          );
+                                        } else if (result['error'] != null) {
+                                          await _feedbackError(
+                                            'Action failed',
+                                            'Unable to complete request.',
+                                          );
+                                        }
+                                      }
+                                    },
                             ),
                           ],
                         ),

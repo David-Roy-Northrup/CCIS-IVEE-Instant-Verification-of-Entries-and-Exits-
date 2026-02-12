@@ -33,10 +33,7 @@ class AdministratorHome extends StatelessWidget {
               Tab(icon: Icon(Icons.list_alt)),
               Tab(icon: Icon(Icons.delete_sweep)),
               Tab(icon: Icon(Icons.analytics_outlined)),
-              Tab(
-                icon: Icon(Icons.supervised_user_circle),
-                text: 'User Access',
-              ),
+              Tab(icon: Icon(Icons.supervised_user_circle)),
             ],
           ),
         ),
